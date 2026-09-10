@@ -1,0 +1,28 @@
+# build output (local or copied from wikiSearch build)
+*.dll
+*.pdb
+*.mdb
+bin/
+obj/
+
+# hot reload / shadow copies
+.hotreload_*
+*_shadow_*.dll
+
+# ide / os
+.vs/
+.idea/
+*.user
+*.suo
+*.swp
+Thumbs.db
+.DS_Store
+
+# local game path override (copy from .example)
+GameRoot.local.props
+
+# secrets (just in case)
+.env
+.env.*
+*.pem
+*.key

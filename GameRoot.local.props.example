@@ -1,0 +1,5 @@
+<Project>
+  <PropertyGroup>
+    <GameRoot>C:\Program Files (x86)\Steam\steamapps\common\Casualties Unknown Demo</GameRoot>
+  </PropertyGroup>
+</Project>
