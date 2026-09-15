@@ -245,3 +245,36 @@ internal static class BearTrapChunkSimPatch
 		return ChunkSimUpdateSkip.ShouldRunAt(__instance);
 	}
 }
+
+[HarmonyPatch(typeof(StalactiteDropper), "Start")]
+internal static class DropperParticleRegisterPatch
+{
+	static void Postfix(StalactiteDropper __instance)
+	{
+		ParticleCullRegistry.RegisterTree(__instance);
+	}
+}
+
+[HarmonyPatch(typeof(StalactiteDropper), "OnWillRenderObject")]
+internal static class DropperChunkSimPatch
+{
+	static bool Prefix(StalactiteDropper __instance) =>
+		ChunkSimUpdateSkip.ShouldRunAt(__instance);
+}
+
+[HarmonyPatch(typeof(CaveTickSpawner), "Update")]
+internal static class CaveTickSpawnerChunkSimPatch
+{
+	static bool Prefix(CaveTickSpawner __instance)
+	{
+		ParticleCullRegistry.Register(__instance.GetComponent<ParticleSystem>());
+		return ChunkSimUpdateSkip.ShouldRunAt(__instance);
+	}
+}
+
+[HarmonyPatch(typeof(ExperimentOscillate), "Update")]
+internal static class GlowshroomOscillateChunkSimPatch
+{
+	static bool Prefix(ExperimentOscillate __instance) =>
+		ChunkSimUpdateSkip.ShouldRunAt(__instance);
+}

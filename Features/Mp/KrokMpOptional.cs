@@ -14,6 +14,7 @@ internal static class KrokMpOptional
 	private static Type _netType;
 	private static Type _netPlayerType;
 	private static FieldInfo _allLivingPlayersField;
+	private static FieldInfo _allDeadPlayersField;
 	private static FieldInfo _clientIdToPlayerDictField;
 	private static PropertyInfo _posProp;
 	private static FieldInfo _bodyField;
@@ -149,6 +150,41 @@ internal static class KrokMpOptional
 		}
 	}
 
+	internal static void AppendDeadPlayerBodyPositions(List<Vector3> dest)
+	{
+		if (dest == null || !IsNetworkRunning || _netPlayerType == null)
+			return;
+
+		EnsurePlayerFields();
+		try
+		{
+			if (_allDeadPlayersField?.GetValue(null) is IEnumerable dead)
+			{
+				foreach (object player in dead)
+					AppendBodyPos(dest, player);
+			}
+		}
+		catch
+		{
+			// ignore
+		}
+	}
+
+	static void AppendBodyPos(List<Vector3> dest, object player)
+	{
+		if (player == null || dest == null)
+			return;
+		try
+		{
+			if (_bodyField?.GetValue(player) is Body body && body)
+				dest.Add(body.transform.position);
+		}
+		catch
+		{
+			// ignore
+		}
+	}
+
 	private static Vector2 ReadPos(object player)
 	{
 		if (_posProp == null)
@@ -173,6 +209,7 @@ internal static class KrokMpOptional
 		const BindingFlags stat = BindingFlags.Public | BindingFlags.Static;
 		const BindingFlags inst = BindingFlags.Public | BindingFlags.Instance;
 		_allLivingPlayersField = _netPlayerType.GetField("AllLivingPlayers", stat);
+		_allDeadPlayersField = _netPlayerType.GetField("AllDeadPlayers", stat);
 		_clientIdToPlayerDictField = _netPlayerType.GetField("ClientIdToPlayerDict", stat);
 		_posProp = _netPlayerType.GetProperty("pos", inst);
 		_bodyField = _netPlayerType.GetField("body", inst);

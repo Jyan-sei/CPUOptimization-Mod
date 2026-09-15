@@ -24,6 +24,8 @@ internal static class LightOptBootstrap
 				typeof(CoilLightUpdatePatch),
 				typeof(TurretLightStartPatch),
 				typeof(TurretLightUpdatePatch),
+				typeof(SidestabberLightStartPatch),
+				typeof(SidestabberLightRenderPatch),
 			})
 			{
 				try

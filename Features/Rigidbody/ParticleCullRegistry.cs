@@ -18,6 +18,16 @@ internal static class ParticleCullRegistry
 		Systems.Add(ps);
 	}
 
+	internal static void RegisterTree(Component owner)
+	{
+		if (!owner)
+			return;
+
+		ParticleSystem[] systems = owner.GetComponentsInChildren<ParticleSystem>(true);
+		for (int i = 0; i < systems.Length; i++)
+			Register(systems[i]);
+	}
+
 	internal static void CompactDead()
 	{
 		for (int i = Systems.Count - 1; i >= 0; i--)

@@ -67,3 +67,37 @@ internal static class TurretLightUpdatePatch
 		__instance.GetComponent<FxLightToEmission>()?.Apply();
 	}
 }
+
+[HarmonyPatch(typeof(SpikeStabberScript), "Start")]
+internal static class SidestabberLightStartPatch
+{
+	static void Postfix(SpikeStabberScript __instance)
+	{
+		if (!LightOptBootstrap.ReplaceTraps)
+			return;
+		if (!IsSidestabber(__instance))
+			return;
+		FxLightToEmission.Attach(__instance.gameObject, "sidestabber", useEnabled: true);
+	}
+
+	internal static bool IsSidestabber(SpikeStabberScript instance)
+	{
+		if (!instance)
+			return false;
+		string name = instance.gameObject.name;
+		return name.StartsWith("sidestabber", System.StringComparison.OrdinalIgnoreCase);
+	}
+}
+
+[HarmonyPatch(typeof(SpikeStabberScript), "OnWillRenderObject")]
+internal static class SidestabberLightRenderPatch
+{
+	static void Postfix(SpikeStabberScript __instance)
+	{
+		if (!LightOptBootstrap.ReplaceTraps)
+			return;
+		if (!SidestabberLightStartPatch.IsSidestabber(__instance))
+			return;
+		__instance.GetComponent<FxLightToEmission>()?.Apply();
+	}
+}

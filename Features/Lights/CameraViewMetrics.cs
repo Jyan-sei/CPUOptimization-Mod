@@ -4,13 +4,20 @@ namespace CPUOptimization.Features.Lights;
 
 internal static class CameraViewMetrics
 {
+	// appear margin 1.56x instead of 1.2x (30% wider) so lights turn on
+	// farther out and dont pop in. off radius keeps the same gap above it
+	const float AppearScale = 1.56f;
+
 	internal static bool TryGetCullRadii(out float onRadius, out float offRadius)
 	{
 		onRadius = Plugin.LightsCullRadius?.Value ?? 72f;
 		offRadius = onRadius + (Plugin.LightsCullHysteresis?.Value ?? 24f);
 
 		if (Plugin.LightsCullUseCameraView != null && !Plugin.LightsCullUseCameraView.Value)
+		{
+			ApplyAppearScale(ref onRadius, ref offRadius);
 			return false;
+		}
 
 		Camera cam = null;
 		if (PlayerCamera.main)
@@ -18,7 +25,10 @@ internal static class CameraViewMetrics
 		if (!cam)
 			cam = Camera.main;
 		if (!cam || !cam.orthographic)
+		{
+			ApplyAppearScale(ref onRadius, ref offRadius);
 			return false;
+		}
 
 		float margin = Plugin.LightsCullCameraMargin?.Value ?? 1.1f;
 		if (margin < 1f)
@@ -37,7 +47,15 @@ internal static class CameraViewMetrics
 		if (configOn > 0.01f)
 			hysteresis *= onRadius / configOn;
 		offRadius = onRadius + hysteresis;
+		ApplyAppearScale(ref onRadius, ref offRadius);
 		return true;
+	}
+
+	static void ApplyAppearScale(ref float onRadius, ref float offRadius)
+	{
+		float extra = offRadius - onRadius;
+		onRadius *= AppearScale;
+		offRadius = onRadius + extra;
 	}
 
 	internal static bool TryGetVisibleHalfExtents(out float halfWidth, out float halfHeight)

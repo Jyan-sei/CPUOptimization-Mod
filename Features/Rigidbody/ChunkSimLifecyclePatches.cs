@@ -11,6 +11,8 @@ internal static class ChunkSimLifecyclePatches
 	{
 		static void Postfix(BuildingEntity __instance)
 		{
+			ParticleCullRegistry.RegisterTree(__instance);
+
 			if (!ChunkSimState.IsActive)
 				return;
 

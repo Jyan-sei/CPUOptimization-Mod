@@ -22,6 +22,10 @@ internal static class ChunkSimBootstrap
 		harmony.PatchAll(typeof(TurretChunkSimPatch));
 		harmony.PatchAll(typeof(MineChunkSimPatch));
 		harmony.PatchAll(typeof(BearTrapChunkSimPatch));
+		harmony.PatchAll(typeof(DropperParticleRegisterPatch));
+		harmony.PatchAll(typeof(DropperChunkSimPatch));
+		harmony.PatchAll(typeof(CaveTickSpawnerChunkSimPatch));
+		harmony.PatchAll(typeof(GlowshroomOscillateChunkSimPatch));
 		harmony.PatchAll(typeof(ChunkSimLifecyclePatches));
 		harmony.PatchAll(typeof(DamageableBuildingHealthPatch));
 		harmony.PatchAll(typeof(BodyAttackBuildingHealthPatch));

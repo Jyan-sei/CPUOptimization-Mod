@@ -69,15 +69,15 @@ public class Plugin : BaseUnityPlugin
 		LightsEnabled = Config.Bind("Lights", "Enabled", true,
 			"local light2d cull + trap sprite flash");
 		LightsReplaceTrapLights = Config.Bind("Lights", "ReplaceTrapLights", true,
-			"kill jumppad/coil/turret light2d, flash sprites instead (spike trap keeps blinking light)");
+			"kill jumppad/coil/turret/sidestabber light2d, flash sprites instead (floor spike trap keeps blinking light)");
 		LightsCullEnabled = Config.Bind("Lights", "CullEnabled", true,
 			"turn off decorative light2d past cull radius from camera");
 		LightsCullRadius = Config.Bind("Lights", "CullRadius", 72f,
-			"world units from camera where lights stay on (fallback if cull use camera view is off)");
+			"world units from camera where lights stay on (fallback if cull use camera view is off, lights come on a bit farther out)");
 		LightsCullUseCameraView = Config.Bind("Lights", "CullUseCameraView", true,
-			"derive cull radius from ortho view (1.1x visible corner). off = fixed cull radius");
+			"derive cull radius from ortho view (1.1x visible corner, then a bit extra). off = fixed cull radius");
 		LightsCullCameraMargin = Config.Bind("Lights", "CullCameraMargin", 1.1f,
-			"multiplier on visible corner distance for light cull on-radius");
+			"multiplier on visible corner distance for light cull on-radius (extra so lights don't pop on-screen)");
 		LightsCullHysteresis = Config.Bind("Lights", "CullHysteresis", 24f,
 			"extra distance before a culled light turns off (stops flicker)");
 		LightsCullIntervalSeconds = Config.Bind("Lights", "CullIntervalSeconds", 0.35f,
@@ -94,7 +94,7 @@ public class Plugin : BaseUnityPlugin
 		ChunkSimEnabled = Config.Bind("ChunkSim", "Enabled", true,
 			"sim rb only in active chunk window (sp: 2x2 around camera; mp: union per player)");
 		ChunkSimMpUnionEnabled = Config.Bind("ChunkSim", "MpUnionEnabled", true,
-			"when krokmp is running, host uses union of each living player's 2x2 window");
+			"when krokmp is running, host uses union of each living player's 2x2 window plus dead player corpses");
 		ChunkSimMpClientLocalSim = Config.Bind("ChunkSim", "MpClientLocalSim", true,
 			"mp clients: sim/cull local 2x2 only. host/listen server always uses union");
 		ChunkSimColliders = Config.Bind("ChunkSim", "ChunkColliders", true,
@@ -184,5 +184,5 @@ internal static class PluginInfo
 {
 	public const string GUID = "com.local.cpu.optimization";
 	public const string Name = "CPUOptimization";
-	public const string Version = "0.5.18";
+	public const string Version = "0.5.20";
 }
