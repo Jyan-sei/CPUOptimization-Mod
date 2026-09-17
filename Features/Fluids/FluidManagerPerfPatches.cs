@@ -51,6 +51,22 @@ internal static class FluidManagerPerfBootstrap
 				prefix: new HarmonyMethod(typeof(FluidManagerPerfPatchLogic), nameof(FluidManagerPerfPatchLogic.RenderFluidsPrefix)));
 		}
 
+		MethodInfo fixedUpdate = AccessTools.Method(fluidType, "FixedUpdate");
+		if (fixedUpdate != null)
+		{
+			harmony.Patch(
+				fixedUpdate,
+				prefix: new HarmonyMethod(typeof(FluidManagerPerfPatchLogic), nameof(FluidManagerPerfPatchLogic.FixedUpdatePrefix)));
+		}
+
+		MethodInfo simStep = AccessTools.Method(fluidType, "SimulationStep");
+		if (simStep != null)
+		{
+			harmony.Patch(
+				simStep,
+				prefix: new HarmonyMethod(typeof(FluidManagerPerfPatchLogic), nameof(FluidManagerPerfPatchLogic.SimulationStepPrefix)));
+		}
+
 		CpuLog.Info("[CPUOpt] fluid perf patches armed");
 	}
 }
@@ -73,6 +89,8 @@ internal static class FluidManagerPerfPatchLogic
 	private static RangeI _renderRangeY;
 	private static List<ParticleSystem.Particle>[] _renderBuckets;
 	private static bool _renderActive;
+
+	private static int _simStepCounter;
 
 	public static void SimulationRangePostfix(ref (RangeI, RangeI) __result)
 	{
@@ -147,6 +165,50 @@ internal static class FluidManagerPerfPatchLogic
 			return true;
 
 		return !_renderActive;
+	}
+
+	public static bool FixedUpdatePrefix()
+	{
+		if (!IsEnabled())
+			return true;
+
+		int interval = Plugin.FluidsSimIntervalFixedFrames?.Value ?? 1;
+		if (interval <= 1)
+			return true;
+
+		if (++_simStepCounter % interval != 0)
+			return false;
+
+		return true;
+	}
+
+	public static bool SimulationStepPrefix(FluidManager __instance)
+	{
+		if (!IsEnabled())
+			return true;
+
+		byte[,] fluid = FluidRef(__instance);
+		if (fluid == null)
+			return true;
+
+		if (!ChunkSimBlockBounds.TryGetSimulationRanges(WorldGeneration.world, out RangeI rx, out RangeI ry))
+			return true;
+
+		int w = fluid.GetLength(0);
+		int h = fluid.GetLength(1);
+
+		for (int i = rx.min; i < rx.max; i++)
+		{
+			if (i < 0 || i >= w) continue;
+			for (int j = ry.min; j < ry.max; j++)
+			{
+				if (j < 0 || j >= h) continue;
+				if (fluid[i, j] != 0)
+					return true;
+			}
+		}
+
+		return false;
 	}
 
 	private static bool IsEnabled() =>

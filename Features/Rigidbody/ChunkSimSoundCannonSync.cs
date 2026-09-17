@@ -23,6 +23,8 @@ internal static class ChunkSimSoundCannonSync
 	{
 		if (!ChunkSimState.IsActive)
 			return;
+		if (Plugin.ChunkSimSoundCannonsEnabled == null || !Plugin.ChunkSimSoundCannonsEnabled.Value)
+			return;
 
 		IReadOnlyList<SoundCannon> cannons = SoundCannonSimRegistry.All;
 		for (int i = 0; i < cannons.Count; i++)
@@ -36,6 +38,8 @@ internal static class ChunkSimSoundCannonSync
 	internal static void Apply(SoundCannon cannon)
 	{
 		if (!cannon || !ChunkSimState.IsActive)
+			return;
+		if (Plugin.ChunkSimSoundCannonsEnabled == null || !Plugin.ChunkSimSoundCannonsEnabled.Value)
 			return;
 
 		ChunkSimTrackState track = ChunkSimTrackTable.Get(cannon);

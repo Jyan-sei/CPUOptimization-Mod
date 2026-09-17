@@ -48,9 +48,17 @@ internal static class ChunkSimBootstrap
 
 		CpuLog.Info(
 			$"[CPUOpt] chunk-sim patches armed colliders={(Plugin.ChunkSimColliders?.Value == true ? 1 : 0)} " +
+			$"freezeCrates={(Plugin.ChunkSimFreezeCrates?.Value == true ? 1 : 0)} " +
 			$"mpUnion={(Plugin.ChunkSimMpUnionEnabled?.Value == true ? 1 : 0)} " +
 			$"mpClientLocal={(Plugin.ChunkSimMpClientLocalSim?.Value == true ? 1 : 0)} " +
-			$"particles=cull-host spiderAnim={spiderAnim} " +
+			$"items={(Plugin.ChunkSimItemsEnabled?.Value == true ? 1 : 0)} " +
+			$"bldgs={(Plugin.ChunkSimBuildingsEnabled?.Value == true ? 1 : 0)} " +
+			$"particles={(Plugin.ChunkSimParticlesEnabled?.Value == true ? 1 : 0)} " +
+			$"soundcannons={(Plugin.ChunkSimSoundCannonsEnabled?.Value == true ? 1 : 0)} " +
+			$"forceformp={(Plugin.ChunkSimForceForMpEnabled?.Value == true ? 1 : 0)} " +
+			$"bldHealth={(Plugin.ChunkSimBuildingHealthEnabled?.Value == true ? 1 : 0)} " +
+			$"krokBypass={(Plugin.ChunkSimKrokMpBypassEnabled?.Value == true ? 1 : 0)} " +
+			$"spiderAnim={spiderAnim} " +
 			$"logOnChange={(Plugin.ChunkSimLogOnChange?.Value == true ? 1 : 0)} sync=window disableOffWindow=1");
 	}
 

@@ -9,4 +9,5 @@ internal enum ItemSiblingOptFlags : byte
 	WaterContainer = 1,
 	Battery = 2,
 	Light = 4,
+	ItemDespawner = 8,
 }

@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using CPUOptimization.Features.ChunkSim;
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 
@@ -19,6 +20,16 @@ internal sealed class LightCullHost : MonoBehaviour
 	private int _passProt;
 	private int _passFx;
 	private int _passLive;
+
+	private static bool _forceImmediateCull;
+
+	// Incremental nearest-light culling (decoupled from chunks for smooth appearance)
+	private int _registryScanCursor;
+	private readonly List<Light2D> _lightCandidates = new List<Light2D>(128);
+	private readonly Dictionary<Light2D, float> _candidateDistances = new Dictionary<Light2D, float>(128);
+	private readonly Queue<Light2D> _lightsToEnable = new Queue<Light2D>();
+	private readonly Queue<Light2D> _lightsToDisable = new Queue<Light2D>();
+	private int _candidateEvalCursor;
 
 	private static int _fxConverted;
 	private static string _lastFxKind;
@@ -46,6 +57,13 @@ internal sealed class LightCullHost : MonoBehaviour
 		LightCullRegistry.CompactDead();
 	}
 
+	// called by ChunkSim on window/union changes so lights in newly active chunks turn on immediately
+	// (avoids waiting for the periodic batch cursor to reach them)
+	internal static void RequestImmediateCull()
+	{
+		_forceImmediateCull = true;
+	}
+
 	private void Update()
 	{
 		if (Plugin.LightsEnabled == null || !Plugin.LightsEnabled.Value)
@@ -56,6 +74,10 @@ internal sealed class LightCullHost : MonoBehaviour
 		if (_wasGenerating && !generating && world)
 		{
 			LightCullRegistry.CompactDead();
+			_lightCandidates.Clear();
+			_candidateDistances.Clear();
+			_lightsToEnable.Clear();
+			_lightsToDisable.Clear();
 			CpuLog.Info("[CPUOpt] lights registry compacted (world gen finished)");
 		}
 		_wasGenerating = generating;
@@ -66,13 +88,18 @@ internal sealed class LightCullHost : MonoBehaviour
 		_cullAge += dt;
 		_logAge += dt;
 
-		float cullEvery = Plugin.LightsCullIntervalSeconds?.Value ?? 0.35f;
-		if (cullEvery < 0.05f)
-			cullEvery = 0.05f;
-		if ((Plugin.LightsCullEnabled == null || Plugin.LightsCullEnabled.Value) && _cullAge >= cullEvery)
+		if (_forceImmediateCull)
 		{
-			_cullAge = 0f;
-			CullBatch();
+			_cullAge = 999f;
+			_forceImmediateCull = false;
+		}
+
+		// New incremental decoupled light culling (1 registry scan + 1 eval + max 1 on + 1 off per frame)
+		if (Plugin.LightsCullEnabled == null || Plugin.LightsCullEnabled.Value)
+		{
+			ScanOneRegistryLightForCandidates();
+			EvaluateOneCandidate();
+			ApplyAtMostOneLightStateChange();
 		}
 
 		float logEvery = Plugin.LightsTelemetryWindowSeconds?.Value ?? 10f;
@@ -166,6 +193,21 @@ internal sealed class LightCullHost : MonoBehaviour
 			return;
 		}
 
+		// Prefer ChunkSim active chunks as truth (consistent with particles, buildings, items, etc.)
+		// This avoids camera-distance pop-in/out and "several seconds to appear" from full-registry batching.
+		// In MP: presentation window means "local for this player" (even outside global union).
+		if (ChunkSimState.IsActive && Plugin.ChunkSimEnabled != null && Plugin.ChunkSimEnabled.Value)
+		{
+			bool inSim = ChunkSimState.ShouldSimulatePresentationWorldPos(light.transform.position);
+			if (light.enabled != inSim)
+				light.enabled = inSim;
+			if (inSim)
+				_passOn++;
+			else
+				_passCulled++;
+			return;
+		}
+
 		float distSq = (light.transform.position - origin).sqrMagnitude;
 		bool wantOn = light.enabled ? distSq <= offSq : distSq <= onSq;
 		if (light.enabled != wantOn)
@@ -243,5 +285,163 @@ internal sealed class LightCullHost : MonoBehaviour
 			$"lastFx={_lastFxKind ?? "-"} radius={onR:F1} " +
 			$"cull={(Plugin.LightsCullEnabled != null && Plugin.LightsCullEnabled.Value ? 1 : 0)} " +
 			$"traps={(Plugin.LightsReplaceTrapLights != null && Plugin.LightsReplaceTrapLights.Value ? 1 : 0)}");
+	}
+
+	// === New decoupled incremental light culling ===
+	// - Uses nearest 9 chunks (3x3) to filter candidates (decouples from full chunk sim window)
+	// - Checks 1 registry light per frame to maintain up to 100 nearest by distance
+	// - Evaluates 1 candidate per frame for on/off decision using distance + hysteresis
+	// - Applies at most 1 enable + 1 disable per frame from queues
+	// - Smooth, no hard chunk border swaps, doesn't walk entire layer
+
+	private void ScanOneRegistryLightForCandidates()
+	{
+		var entries = LightCullRegistry.All;
+		if (entries.Count == 0) return;
+
+		_registryScanCursor = (_registryScanCursor + 1) % entries.Count;
+		LightCullEntry entry = entries[_registryScanCursor];
+		Light2D light = entry.Light;
+		if (!light) return;
+
+		Vector3 pos = light.transform.position;
+		if (IsWithinNearest9Chunks(pos))
+		{
+			UpdateOrAddCandidate(light, pos);
+		}
+		else
+		{
+			RemoveFromCandidates(light);
+		}
+	}
+
+	private bool IsWithinNearest9Chunks(Vector3 pos)
+	{
+		WorldGeneration world = WorldGeneration.world;
+		if (world == null || !world.worldExists) return true; // fallback to consider
+
+		try
+		{
+			Vector3 cam = GetCameraPositionForLights();
+			Vector2Int camBlock = world.WorldToBlockPos(cam);
+			Vector2Int camChunk = world.BlockToChunkPos(camBlock);
+
+			Vector2Int lightBlock = world.WorldToBlockPos(pos);
+			Vector2Int lightChunk = world.BlockToChunkPos(lightBlock);
+
+			int dx = System.Math.Abs(lightChunk.x - camChunk.x);
+			int dy = System.Math.Abs(lightChunk.y - camChunk.y);
+			return dx <= 1 && dy <= 1; // 3x3 = 9 chunks
+		}
+		catch
+		{
+			return true;
+		}
+	}
+
+	private Vector3 GetCameraPositionForLights()
+	{
+		if (PlayerCamera.main) return PlayerCamera.main.transform.position;
+		if (Camera.main) return Camera.main.transform.position;
+		return Vector3.zero;
+	}
+
+	private void UpdateOrAddCandidate(Light2D light, Vector3 pos)
+	{
+		Vector3 origin = GetCameraPositionForLights();
+		float dist = (pos - origin).magnitude;
+
+		_candidateDistances[light] = dist;
+
+		if (!_lightCandidates.Contains(light))
+			_lightCandidates.Add(light);
+
+		// Keep only nearest 100
+		while (_lightCandidates.Count > 100)
+		{
+			Light2D farthest = null;
+			float maxDist = float.MinValue;
+			foreach (var l in _lightCandidates)
+			{
+				if (_candidateDistances.TryGetValue(l, out float d) && d > maxDist)
+				{
+					maxDist = d;
+					farthest = l;
+				}
+			}
+			if (farthest != null)
+			{
+				_lightCandidates.Remove(farthest);
+				_candidateDistances.Remove(farthest);
+			}
+			else break;
+		}
+	}
+
+	private void RemoveFromCandidates(Light2D light)
+	{
+		_lightCandidates.Remove(light);
+		_candidateDistances.Remove(light);
+	}
+
+	private void EvaluateOneCandidate()
+	{
+		if (_lightCandidates.Count == 0) return;
+
+		_candidateEvalCursor = (_candidateEvalCursor + 1) % _lightCandidates.Count;
+		Light2D light = _lightCandidates[_candidateEvalCursor];
+		if (!light)
+		{
+			RemoveFromCandidates(light);
+			return;
+		}
+
+		// Respect protected / fx (always on or special)
+		// Quick check, approximate
+		if ((light.lightType == Light2D.LightType.Global) || light.GetComponentInParent<FxLightToEmission>() != null || light.GetComponentInParent<LightItem>() != null)
+		{
+			if (!light.enabled) light.enabled = true;
+			return;
+		}
+
+		if (!_candidateDistances.TryGetValue(light, out float dist))
+		{
+			dist = (light.transform.position - GetCameraPositionForLights()).magnitude;
+			_candidateDistances[light] = dist;
+		}
+
+		CameraViewMetrics.TryGetCullRadii(out float onR, out float offR);
+
+		bool currentlyOn = light.enabled;
+		bool shouldOn = dist <= (currentlyOn ? offR : onR);
+
+		if (currentlyOn != shouldOn)
+		{
+			if (shouldOn)
+				_lightsToEnable.Enqueue(light);
+			else
+				_lightsToDisable.Enqueue(light);
+		}
+	}
+
+	private void ApplyAtMostOneLightStateChange()
+	{
+		// At most 1 deactivate + 1 activate per frame
+		if (_lightsToDisable.Count > 0)
+		{
+			Light2D l = _lightsToDisable.Dequeue();
+			if (l && l.enabled)
+				l.enabled = false;
+		}
+
+		if (_lightsToEnable.Count > 0)
+		{
+			Light2D l = _lightsToEnable.Dequeue();
+			if (l && !l.enabled)
+				l.enabled = true;
+		}
+
+		// Update stats for logs (approximate)
+		LastTotal = _lightCandidates.Count;
 	}
 }

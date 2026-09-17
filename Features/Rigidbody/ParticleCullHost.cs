@@ -16,6 +16,8 @@ internal sealed class ParticleCullHost : MonoBehaviour
 	{
 		if (Plugin.ChunkSimEnabled == null || !Plugin.ChunkSimEnabled.Value || !ChunkSimState.IsActive)
 			return;
+		if (Plugin.ChunkSimParticlesEnabled == null || !Plugin.ChunkSimParticlesEnabled.Value)
+			return;
 
 		WorldGeneration world = WorldGeneration.world;
 		if (!world || world.generatingWorld)

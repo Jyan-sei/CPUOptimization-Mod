@@ -11,6 +11,8 @@ internal static class ItemChunkSimPatch
 	{
 		if (!ChunkSimState.IsActive)
 			return true;
+		if (Plugin.ChunkSimItemsEnabled == null || !Plugin.ChunkSimItemsEnabled.Value)
+			return true;
 
 		if (__instance.transform.parent)
 		{
@@ -65,6 +67,9 @@ internal static class WaterContainerItemChunkSimPatch
 		if (item.transform.parent)
 			return true;
 
+		if (Plugin.ChunkSimItemsEnabled == null || !Plugin.ChunkSimItemsEnabled.Value)
+			return true;
+
 		return ChunkSimBodySync.ShouldSimulateItem(item);
 	}
 }
@@ -85,6 +90,9 @@ internal static class BuildingChunkSimPatch
 			ChunkSimBodySync.ForceEnableBuildingUpdate(__instance, track);
 			return true;
 		}
+
+		if (Plugin.ChunkSimBuildingsEnabled == null || !Plugin.ChunkSimBuildingsEnabled.Value)
+			return true;
 
 		if (__instance.GetComponent<ElderThornbackBehaviour>())
 			return true;

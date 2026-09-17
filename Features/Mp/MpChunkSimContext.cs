@@ -71,47 +71,56 @@ internal static class MpChunkSimContext
 	}
 }
 
-// pin every live body too (players, corpses, traders, carried) in case a
-// netplayer list misses one during a handoff like a trader revive. scene scan
-// is throttled so its cheap, positions only need to be chunk-accurate anyway
 internal static class BodyPinCache
 {
-	private static readonly List<Vector3> Cached = new List<Vector3>(32);
-	private static float _age;
-	internal const float RescanSeconds = 0.5f;
+	private static readonly List<Body> Pinned = new List<Body>(16);
+	private static int _deaths;
+	private static int _droppedNull;
+	private static int _fot;
+
+	internal static void Clear()
+	{
+		Pinned.Clear();
+	}
+
+	internal static void Pin(Body body)
+	{
+		if (!body)
+			return;
+		for (int i = 0; i < Pinned.Count; i++)
+		{
+			if (Pinned[i] == body)
+				return;
+		}
+		Pinned.Add(body);
+		_deaths++;
+	}
 
 	internal static void AppendPinnedBodies(List<Vector3> dest)
 	{
 		if (dest == null)
 			return;
-		_age += UnityEngine.Time.unscaledDeltaTime;
-		if (_age >= RescanSeconds || Cached.Count == 0)
+		for (int i = Pinned.Count - 1; i >= 0; i--)
 		{
-			_age = 0f;
-			Rescan();
+			Body b = Pinned[i];
+			if (!b)
+			{
+				Pinned.RemoveAt(i);
+				_droppedNull++;
+				continue;
+			}
+			dest.Add(b.transform.position);
 		}
-
-		for (int i = 0; i < Cached.Count; i++)
-			dest.Add(Cached[i]);
 	}
 
-	private static void Rescan()
+	internal static void ConsumeProbe(out int deaths, out int pinned, out int droppedNull, out int fot)
 	{
-		Cached.Clear();
-		try
-		{
-			Body[] bodies = UnityEngine.Object.FindObjectsOfType<Body>();
-			for (int i = 0; i < bodies.Length; i++)
-			{
-				Body b = bodies[i];
-				if (!b)
-					continue;
-				Cached.Add(b.transform.position);
-			}
-		}
-		catch
-		{
-			// ignore
-		}
+		deaths = _deaths;
+		pinned = Pinned.Count;
+		droppedNull = _droppedNull;
+		fot = _fot;
+		_deaths = 0;
+		_droppedNull = 0;
+		_fot = 0;
 	}
 }

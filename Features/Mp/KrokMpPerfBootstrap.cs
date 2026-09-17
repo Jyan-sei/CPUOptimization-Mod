@@ -120,6 +120,7 @@ internal static class KrokMpPerfBootstrap
 				OnWillRenderObjectPerfPatch.Apply(harmony);
 				ItemDespawnerPerfPatch.Apply(harmony);
 				VoicechatPerfPatch.Apply(harmony);
+				BodyPinDeathPatch.Apply(harmony);
 				_coreArmed = true;
 			}
 

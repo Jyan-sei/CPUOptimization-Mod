@@ -52,6 +52,7 @@ internal static class KrokMpReflect
 	internal static MethodInfo MPinSimRangeMethod;
 
 	internal static Type NetBodyType;
+	internal static MethodInfo NetBodyOnDeath;
 	internal static MethodInfo NetBodyGetBodiesFillMethod;
 
 	internal static Type NetObjectRegistryType;
@@ -132,6 +133,7 @@ internal static class KrokMpReflect
 
 		if (NetBodyType != null)
 		{
+			NetBodyOnDeath = NetBodyType.GetMethod("OnDeath", inst);
 			Type listType = typeof(System.Collections.Generic.List<>).MakeGenericType(NetBodyType);
 			foreach (MethodInfo mi in NetBodyType.GetMethods(stat))
 			{

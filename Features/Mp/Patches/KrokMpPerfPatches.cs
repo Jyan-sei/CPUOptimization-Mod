@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using CPUOptimization.Features.ChunkSim;
+using CPUOptimization.Features.Mp;
 using HarmonyLib;
 using UnityEngine;
 
@@ -149,6 +151,10 @@ internal static class ItemDespawnerPerfPatch
 
 internal static class SpiderTrackerPerfPatch
 {
+	private static readonly List<MonoBehaviour> Trackers = new List<MonoBehaviour>(256);
+	private static int _disabled;
+	private static int _enabled;
+
 	internal static void Apply(Harmony harmony)
 	{
 		if (KrokMpReflect.SpiderTrackerLateUpdate == null)
@@ -156,6 +162,19 @@ internal static class SpiderTrackerPerfPatch
 		harmony.Patch(
 			KrokMpReflect.SpiderTrackerLateUpdate,
 			prefix: new HarmonyMethod(typeof(SpiderTrackerPerfPatch), nameof(Prefix)));
+
+		if (KrokMpReflect.SpiderTrackerType != null)
+		{
+			var start = AccessTools.Method(KrokMpReflect.SpiderTrackerType, "Start");
+			if (start != null)
+				harmony.Patch(start, postfix: new HarmonyMethod(typeof(SpiderTrackerPerfPatch), nameof(StartPostfix)));
+		}
+	}
+
+	static void StartPostfix(MonoBehaviour __instance)
+	{
+		Register(__instance);
+		SyncOne(__instance);
 	}
 
 	static bool Prefix(MonoBehaviour __instance)
@@ -163,25 +182,83 @@ internal static class SpiderTrackerPerfPatch
 		if (Plugin.KrokMpPerfEnabled == null || !Plugin.KrokMpPerfEnabled.Value)
 			return true;
 
-		if (IsElderThornback(__instance))
+		Register(__instance);
+
+		if (IsElderTracker(__instance))
 			return true;
 
 		if (!KrokMpChunkGate.ShouldRunAt(__instance.transform.position))
+		{
+			if (__instance.enabled)
+			{
+				__instance.enabled = false;
+				_disabled++;
+			}
 			return false;
+		}
 
 		return true;
 	}
 
-	private static bool IsElderThornback(MonoBehaviour instance)
+	internal static void SyncEnabled()
 	{
-		if (!instance)
-			return false;
+		for (int i = Trackers.Count - 1; i >= 0; i--)
+		{
+			MonoBehaviour tracker = Trackers[i];
+			if (!tracker)
+			{
+				Trackers.RemoveAt(i);
+				continue;
+			}
+			SyncOne(tracker);
+		}
+	}
 
-		if (instance.GetComponent<ElderThornbackBehaviour>())
-			return true;
+	private static void SyncOne(MonoBehaviour tracker)
+	{
+		if (!tracker)
+			return;
+		bool want = IsElderTracker(tracker)
+		            || KrokMpChunkGate.ShouldRunAt(tracker.transform.position);
+		if (want)
+		{
+			if (!tracker.enabled)
+			{
+				tracker.enabled = true;
+				_enabled++;
+			}
+			return;
+		}
+		if (tracker.enabled)
+		{
+			tracker.enabled = false;
+			_disabled++;
+		}
+	}
 
-		BuildingEntity building = instance.GetComponent<BuildingEntity>();
-		return building && building.GetComponent<ElderThornbackBehaviour>();
+	private static void Register(MonoBehaviour tracker)
+	{
+		if (!tracker)
+			return;
+		for (int i = 0; i < Trackers.Count; i++)
+		{
+			if (Trackers[i] == tracker)
+				return;
+		}
+		Trackers.Add(tracker);
+	}
+
+	private static bool IsElderTracker(MonoBehaviour instance)
+	{
+		return instance && ElderRegistry.IsOnGameObject(instance.gameObject);
+	}
+
+	internal static void ConsumeProbe(out int disabled, out int enabled)
+	{
+		disabled = _disabled;
+		enabled = _enabled;
+		_disabled = 0;
+		_enabled = 0;
 	}
 }
 
@@ -207,5 +284,27 @@ internal static class VoicechatPerfPatch
 			return false;
 
 		return true;
+	}
+}
+
+internal static class BodyPinDeathPatch
+{
+	internal static void Apply(Harmony harmony)
+	{
+		if (KrokMpReflect.NetBodyOnDeath == null)
+			return;
+		harmony.Patch(
+			KrokMpReflect.NetBodyOnDeath,
+			postfix: new HarmonyMethod(typeof(BodyPinDeathPatch), nameof(Postfix)));
+	}
+
+	static void Postfix(object __instance)
+	{
+		if (__instance is not MonoBehaviour mb)
+			return;
+		Body body = mb.GetComponent<Body>();
+		if (!body)
+			body = mb.GetComponentInParent<Body>();
+		BodyPinCache.Pin(body);
 	}
 }

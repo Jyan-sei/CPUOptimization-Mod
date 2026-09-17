@@ -100,4 +100,36 @@ internal static class ChunkSimLifecyclePatches
 	{
 		static void Prefix(SoundCannon __instance) => ChunkSimSoundCannonSync.OnDestroyed(__instance);
 	}
+
+	[HarmonyPatch(typeof(ElderThornbackBehaviour), "Start")]
+	internal static class ElderThornbackStartPatch
+	{
+		static void Postfix(ElderThornbackBehaviour __instance)
+		{
+			if (__instance == null)
+				return;
+
+			ElderRegistry.Register(__instance);
+
+			if (!ChunkSimState.IsActive)
+				return;
+
+			var building = __instance.GetComponent<BuildingEntity>();
+			if (building)
+			{
+				BuildingSimRegistry.Register(building);
+				ChunkSimBodySync.ApplyBuilding(building);
+			}
+		}
+	}
+
+	[HarmonyPatch(typeof(ElderThornbackBehaviour), "OnDestroy")]
+	internal static class ElderThornbackDestroyPatch
+	{
+		static void Prefix(ElderThornbackBehaviour __instance)
+		{
+			if (__instance)
+				ElderRegistry.Unregister(__instance);
+		}
+	}
 }

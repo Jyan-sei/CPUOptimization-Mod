@@ -21,6 +21,8 @@ internal static class KrokMpBuildingOptimizeBypass
 	{
 		if (!ChunkSimState.IsActive || !rb)
 			return true;
+		if (Plugin.ChunkSimKrokMpBypassEnabled == null || !Plugin.ChunkSimKrokMpBypassEnabled.Value)
+			return true;
 
 		return !ChunkSimState.ShouldSimulateWorldPos(rb.position);
 	}

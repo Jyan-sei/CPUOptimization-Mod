@@ -56,7 +56,10 @@
     </Reference>
   </ItemGroup>
 
+  <Target Name="CopyPluginToProjectDir" AfterTargets="Build">
+    <Copy SourceFiles="$(OutputPath)CPUOptimization.dll" DestinationFolder="$(MSBuildThisFileDirectory)" SkipUnchangedFiles="false" />
+  </Target>
   <Target Name="DeployToGame" AfterTargets="Build" Condition="Exists('$(DeployDir)')">
-    <Copy SourceFiles="$(OutputPath)CPUOptimization.dll" DestinationFolder="$(DeployDir)" SkipUnchangedFiles="true" />
+    <Copy SourceFiles="$(OutputPath)CPUOptimization.dll" DestinationFolder="$(DeployDir)" SkipUnchangedFiles="false" />
   </Target>
 </Project>

@@ -9,6 +9,8 @@ internal static class DamageableBuildingHealthPatch
 	{
 		if (!ChunkSimState.IsActive)
 			return;
+		if (Plugin.ChunkSimBuildingHealthEnabled == null || !Plugin.ChunkSimBuildingHealthEnabled.Value)
+			return;
 
 		BuildingEntity building = __instance.GetComponent<BuildingEntity>();
 		if (building)
@@ -21,7 +23,8 @@ internal static class BodyAttackBuildingHealthPatch
 {
 	static void Postfix()
 	{
-		if (ChunkSimState.IsActive)
+		if (ChunkSimState.IsActive
+		    && (Plugin.ChunkSimBuildingHealthEnabled == null || Plugin.ChunkSimBuildingHealthEnabled.Value))
 			ChunkSimBodySync.ProcessDyingBuildings();
 	}
 }

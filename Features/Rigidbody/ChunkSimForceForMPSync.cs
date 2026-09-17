@@ -9,6 +9,8 @@ internal static class ChunkSimForceForMPSync
 	{
 		if (!ChunkSimState.IsActive)
 			return;
+		if (Plugin.ChunkSimForceForMpEnabled == null || !Plugin.ChunkSimForceForMpEnabled.Value)
+			return;
 
 		ForceForMPScheduler.SyncAllEnabledStates();
 	}

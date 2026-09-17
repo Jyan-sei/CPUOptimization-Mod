@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using CPUOptimization.Features.Mp;
 using UnityEngine;
 
 namespace CPUOptimization.Features.ChunkSim;
@@ -8,6 +9,8 @@ internal static class ChunkSimBodySync
 {
 	internal static int ItemsSimCount { get; private set; }
 	internal static int ItemsSleepCount { get; private set; }
+	internal static int DespawnerSleepDisableCount { get; private set; }
+	internal static int DespawnerWakeEnableCount { get; private set; }
 
 	internal static void SyncAll()
 	{
@@ -74,6 +77,8 @@ internal static class ChunkSimBodySync
 	internal static void ApplyBuilding(BuildingEntity building)
 	{
 		if (!building || !ChunkSimState.IsActive)
+			return;
+		if (Plugin.ChunkSimBuildingsEnabled == null || !Plugin.ChunkSimBuildingsEnabled.Value)
 			return;
 
 		ChunkSimTrackState track = ChunkSimTrackTable.Get(building);
@@ -206,6 +211,8 @@ internal static class ChunkSimBodySync
 	{
 		if (!item || item.transform.parent || !ChunkSimState.IsActive)
 			return false;
+		if (Plugin.ChunkSimItemsEnabled == null || !Plugin.ChunkSimItemsEnabled.Value)
+			return false;
 
 		bool inSim = ShouldSimulateItem(item);
 		if (inSim)
@@ -220,6 +227,14 @@ internal static class ChunkSimBodySync
 	{
 		if (!item || item.transform.parent)
 			return false;
+
+		// Exempt glowplants, lightbulbs etc. - they can stay forever (light cull will handle lights, sprites are cheap)
+		if (item.id != null)
+		{
+			string id = item.id.ToLowerInvariant();
+			if (id.Contains("glowplant") || id.Contains("lightbulb"))
+				return true;
+		}
 
 		WorldGeneration world = WorldGeneration.world;
 		if (!world || !world.worldExists)
@@ -292,6 +307,26 @@ internal static class ChunkSimBodySync
 		RestoreItemComponents(item, ChunkSimTrackTable.Get(item));
 	}
 
+	// force initial baseline (as if in-sim) for crates/items at load to prevent fall-before-first-visit
+	internal static void ForceBaselineItem(Item item)
+	{
+		if (!item)
+			return;
+
+		ChunkSimTrackState track = ChunkSimTrackTable.Get(item);
+		RestoreItemComponents(item, track);
+
+		if (item.rb)
+			item.rb.simulated = true;
+		if (item.affect)
+			item.affect.enabled = true;
+
+		track.ItemLastInSim = true;
+		track.ItemInitialized = true;
+		track.ItemDisabledByOpt = false;
+		track.ItemDecayAccum = 0f;
+	}
+
 	internal static void RestoreItemComponents(Item item, ChunkSimTrackState track)
 	{
 		if (!item || track == null)
@@ -331,6 +366,14 @@ internal static class ChunkSimBodySync
 			light.enabled = false;
 			track.ItemSiblingsDisabledByOpt |= ItemSiblingOptFlags.Light;
 		}
+
+		Behaviour despawner = GetItemDespawner(item);
+		if (despawner && despawner.enabled)
+		{
+			despawner.enabled = false;
+			track.ItemSiblingsDisabledByOpt |= ItemSiblingOptFlags.ItemDespawner;
+			DespawnerSleepDisableCount++;
+		}
 	}
 
 	internal static void RestoreItemSiblings(Item item, ChunkSimTrackState track)
@@ -357,6 +400,14 @@ internal static class ChunkSimBodySync
 			LightItem light = item.GetComponent<LightItem>();
 			if (light)
 				light.enabled = true;
+		}
+
+		if ((track.ItemSiblingsDisabledByOpt & ItemSiblingOptFlags.ItemDespawner) != 0)
+		{
+			Behaviour despawner = GetItemDespawner(item);
+			if (despawner)
+				despawner.enabled = true;
+			DespawnerWakeEnableCount++;
 		}
 
 		track.ItemSiblingsDisabledByOpt = ItemSiblingOptFlags.None;
@@ -400,5 +451,20 @@ internal static class ChunkSimBodySync
 		if (item)
 			RestoreItemIfOptDisabled(item);
 		ChunkSimTrackTable.Remove(item);
+	}
+
+	internal static void ConsumeDespawnerProbe(out int sleepDisable, out int wakeEnable)
+	{
+		sleepDisable = DespawnerSleepDisableCount;
+		wakeEnable = DespawnerWakeEnableCount;
+		DespawnerSleepDisableCount = 0;
+		DespawnerWakeEnableCount = 0;
+	}
+
+	private static Behaviour GetItemDespawner(Item item)
+	{
+		if (!item || KrokMpReflect.ItemDespawnerType == null)
+			return null;
+		return item.GetComponent(KrokMpReflect.ItemDespawnerType) as Behaviour;
 	}
 }

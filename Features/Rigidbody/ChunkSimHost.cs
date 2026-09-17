@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using CPUOptimization.Features.Lights;
 using CPUOptimization.Features.Mp;
 using UnityEngine;
 using UnityEngine.Tilemaps;
@@ -20,11 +21,14 @@ internal sealed class ChunkSimHost : MonoBehaviour
 	private ChunkSimUnionWindow _lastUnion;
 	private readonly List<ColliderCellDiff> _colliderQueue = new List<ColliderCellDiff>(64);
 	private readonly HashSet<long> _appliedColliderChunks = new HashSet<long>();
+	private static readonly Collider2D[] _physicsOverlapBuffer = new Collider2D[32];
 	private bool _wasGenerating = true;
 	private bool _armedLogged;
 	private bool _registryBootstrapped;
 	private float _telemetryAge;
 	private bool _mpModeLogged;
+	private bool _rebaselined;
+
 
 	private void Update()
 	{
@@ -47,8 +51,11 @@ internal sealed class ChunkSimHost : MonoBehaviour
 			BuildingSimRegistry.Clear();
 			SoundCannonSimRegistry.Clear();
 			ChunkSimTrackTable.Clear();
+			ElderRegistry.Clear();
+			BodyPinCache.Clear();
 			_registryBootstrapped = false;
 			_mpModeLogged = false;
+			_rebaselined = false;
 
 			if (mpStarted)
 			{
@@ -71,7 +78,12 @@ internal sealed class ChunkSimHost : MonoBehaviour
 			BuildingSimRegistry.Clear();
 			SoundCannonSimRegistry.Clear();
 			ChunkSimTrackTable.Clear();
+			ElderRegistry.Clear();
+			BodyPinCache.Clear();
+			_rebaselined = false;
 			RebootstrapBuildingRegistry();
+			RescanForElders();
+			RebaselineAllChunksOnce(world);
 			CpuLog.Info("[CPUOpt] chunk-sim waiting for camera/world (world gen finished)");
 		}
 		_wasGenerating = generating;
@@ -94,12 +106,16 @@ internal sealed class ChunkSimHost : MonoBehaviour
 		else
 			windowChanged = UpdateSpWindow(world);
 
+		if (windowChanged)
+			CPUOptimization.Features.Mp.Patches.SpiderTrackerPerfPatch.SyncEnabled();
+
 		if (!_armedLogged && ChunkSimState.IsActive)
 		{
 			_armedLogged = true;
 			CpuLog.Info(
 				$"[CPUOpt] chunk-sim armed mode={ChunkSimState.FormatSimMode()} " +
 				$"colliders={(Plugin.ChunkSimColliders?.Value == true ? 1 : 0)} " +
+				$"freezeCrates={(Plugin.ChunkSimFreezeCrates?.Value == true ? 1 : 0)} " +
 				$"grid={world.chunkWidth}x{world.chunkHeight} krokmp={(KrokMpOptional.IsPresent ? 1 : 0)}");
 			if (KrokMpOptional.IsPresent)
 				KrokMpPerfBootstrap.RequestRetry("chunk-sim armed");
@@ -137,6 +153,7 @@ internal sealed class ChunkSimHost : MonoBehaviour
 			ApplyColliderWindow(world, _lastWindow, window);
 			ChunkSimBodySync.SyncAll();
 			LogWindowChange(world, camWorld, window);
+			LightCullHost.RequestImmediateCull();
 			_lastWindow = window;
 			_lastUnion = null;
 		}
@@ -170,6 +187,7 @@ internal sealed class ChunkSimHost : MonoBehaviour
 			EnqueueUnionColliderDiff(world, union);
 			LogUnionChange(world, union, _colliderQueue.Count,
 				ChunkSimBodySpread.BuildingsRemaining + ChunkSimBodySpread.ItemsRemaining);
+			LightCullHost.RequestImmediateCull();
 			_lastUnion = union;
 			_lastWindow = null;
 		}
@@ -193,6 +211,7 @@ internal sealed class ChunkSimHost : MonoBehaviour
 			ApplyColliderWindow(world, _lastWindow, window);
 			ChunkSimBodySync.SyncAll();
 			LogWindowChange(world, camWorld, window);
+			LightCullHost.RequestImmediateCull();
 			_lastWindow = window;
 			_lastUnion = null;
 		}
@@ -400,6 +419,180 @@ internal sealed class ChunkSimHost : MonoBehaviour
 		var tile = go.GetComponent<TilemapCollider2D>();
 		if (tile)
 			tile.enabled = enabled;
+
+		// freeze/unfreeze dynamic objects when their terrain support collider toggles
+		// (DamagingCrates only if ChunkSimFreezeCrates; Items/minibarrels always)
+		// prevents falling through when colliders disabled
+		if (enabled)
+			UnfreezeChunkSupportObjects(world, cx, cy);
+		else
+			FreezeChunkSupportObjects(world, cx, cy);
+	}
+
+	private static void FreezeChunkSupportObjects(WorldGeneration world, int cx, int cy)
+	{
+		if (world == null || !world.worldExists)
+			return;
+
+		float cs = WorldGeneration.CHUNKSIZE;
+		float hw = world.chunkWidth * 0.5f;
+		float hh = world.chunkHeight * 0.5f;
+		float cxWorld = (cx - hw + 0.5f) * cs;
+		float cyWorld = (cy - hh + 0.5f) * cs;
+
+		int count = Physics2D.OverlapBoxNonAlloc(
+			new Vector2(cxWorld, cyWorld),
+			new Vector2(cs, cs),
+			0f,
+			_physicsOverlapBuffer);
+
+		for (int i = 0; i < count && i < _physicsOverlapBuffer.Length; i++)
+		{
+			Collider2D col = _physicsOverlapBuffer[i];
+			if (col == null)
+				continue;
+
+			if (Plugin.ChunkSimFreezeCrates == null || Plugin.ChunkSimFreezeCrates.Value)
+			{
+				DamagingCrate crate = col.GetComponent<DamagingCrate>();
+				if (crate != null)
+				{
+					Rigidbody2D rb = crate.GetComponent<Rigidbody2D>();
+					if (rb != null)
+					{
+						rb.isKinematic = true;
+						rb.velocity = Vector2.zero;
+					}
+				}
+			}
+
+			// also freeze spawned items and minibarrels when their terrain support disappears
+			Item item = col.GetComponent<Item>();
+			if (item != null && !item.transform.parent)
+			{
+				ChunkSimBodySync.ApplyItemSleep(item);
+				if (item.rb)
+				{
+					item.rb.velocity = Vector2.zero;
+				}
+			}
+		}
+	}
+
+	private static void UnfreezeChunkSupportObjects(WorldGeneration world, int cx, int cy)
+	{
+		if (world == null || !world.worldExists)
+			return;
+
+		float cs = WorldGeneration.CHUNKSIZE;
+		float hw = world.chunkWidth * 0.5f;
+		float hh = world.chunkHeight * 0.5f;
+		float cxWorld = (cx - hw + 0.5f) * cs;
+		float cyWorld = (cy - hh + 0.5f) * cs;
+
+		int count = Physics2D.OverlapBoxNonAlloc(
+			new Vector2(cxWorld, cyWorld),
+			new Vector2(cs, cs),
+			0f,
+			_physicsOverlapBuffer);
+
+		for (int i = 0; i < count && i < _physicsOverlapBuffer.Length; i++)
+		{
+			Collider2D col = _physicsOverlapBuffer[i];
+			if (col == null)
+				continue;
+
+			if (Plugin.ChunkSimFreezeCrates == null || Plugin.ChunkSimFreezeCrates.Value)
+			{
+				DamagingCrate crate = col.GetComponent<DamagingCrate>();
+				if (crate != null)
+				{
+					Rigidbody2D rb = crate.GetComponent<Rigidbody2D>();
+					if (rb != null)
+					{
+						bool should = !ChunkSimState.IsActive || ChunkSimState.ShouldSimulateWorldPos(crate.transform.position);
+						rb.isKinematic = !should;
+						rb.simulated = should;
+					}
+				}
+			}
+
+			// unfreeze items/minibarrels when terrain support returns
+			Item item = col.GetComponent<Item>();
+			if (item != null && !item.transform.parent)
+			{
+				bool should = !ChunkSimState.IsActive || ChunkSimState.ShouldSimulateWorldPos(item.transform.position);
+				if (should)
+					ChunkSimBodySync.ApplyItemWake(item);
+				else
+					ChunkSimBodySync.ApplyItemSleep(item);
+			}
+		}
+	}
+
+	// one-time walk over every chunk after terrain/world load to rebaseline crate/item positions
+	// ensures they settle on terrain before any later sleep decisions or first player visit
+	// addresses: fall on spawn, snap only when walking near spawn point
+	private void RebaselineAllChunksOnce(WorldGeneration world)
+	{
+		if (_rebaselined)
+			return;
+		if (world == null || !world.worldExists)
+			return;
+
+		for (int x = 0; x < world.chunkWidth; x++)
+		{
+			for (int y = 0; y < world.chunkHeight; y++)
+			{
+				BaselineChunkSupportObjects(world, x, y);
+			}
+		}
+		_rebaselined = true;
+		CpuLog.Info("[CPUOpt] chunk-sim one-time rebaseline walk complete (all chunks)");
+	}
+
+	private static void BaselineChunkSupportObjects(WorldGeneration world, int cx, int cy)
+	{
+		if (world == null || !world.worldExists)
+			return;
+
+		float cs = WorldGeneration.CHUNKSIZE;
+		float hw = world.chunkWidth * 0.5f;
+		float hh = world.chunkHeight * 0.5f;
+		float cxWorld = (cx - hw + 0.5f) * cs;
+		float cyWorld = (cy - hh + 0.5f) * cs;
+
+		int count = Physics2D.OverlapBoxNonAlloc(
+			new Vector2(cxWorld, cyWorld),
+			new Vector2(cs, cs),
+			0f,
+			_physicsOverlapBuffer);
+
+		for (int i = 0; i < count && i < _physicsOverlapBuffer.Length; i++)
+		{
+			Collider2D col = _physicsOverlapBuffer[i];
+			if (col == null)
+				continue;
+
+			DamagingCrate crate = col.GetComponent<DamagingCrate>();
+			if (crate != null)
+			{
+				Rigidbody2D rb = crate.GetComponent<Rigidbody2D>();
+				if (rb != null)
+				{
+					rb.isKinematic = false;
+					rb.simulated = true;
+					// leave velocity as-is so any natural settle can occur; zero only if prior momentum bad
+				}
+			}
+
+			Item item = col.GetComponent<Item>();
+			if (item != null && !item.transform.parent)
+			{
+				if (Plugin.ChunkSimItemsEnabled == null || Plugin.ChunkSimItemsEnabled.Value)
+					ChunkSimBodySync.ForceBaselineItem(item);
+			}
+		}
 	}
 
 	private static void LogUnionChange(
@@ -446,10 +639,20 @@ internal sealed class ChunkSimHost : MonoBehaviour
 		CountBodies(out int itemsSim, out int itemsSleep, out int bldDyn, out int bldStatic, out int elder);
 		string mode = ChunkSimState.FormatSimMode();
 		int chunkCount = ChunkSimState.ActiveChunkCount;
+		ChunkSimBodySync.ConsumeDespawnerProbe(out int despSleep, out int despWake);
+		int fot = ElderRegistry.ConsumeFotRescan();
+		CPUOptimization.Features.Mp.Patches.SpiderTrackerPerfPatch.ConsumeProbe(out int trkOff, out int trkOn);
+		BodyPinCache.ConsumeProbe(out int deaths, out int pinned, out int dropped, out int fotBody);
 		CpuLog.Info(
 			$"[CPUOpt] chunk-sim steady={ (steadyWindow ? 1 : 0) } mode={mode} " +
 			$"chunks={ChunkSimState.FormatActiveChunks()} collidersOn={chunkCount} " +
 			$"items sim={itemsSim} sleep={itemsSleep} buildings dyn={bldDyn} static={bldStatic} elder={elder}");
+		CpuLog.Info(
+			$"[CPUOpt] despawner sleepDisable={despSleep} wakeEnable={despWake}");
+		CpuLog.Info(
+			$"[CPUOpt] spider-trk disabled={trkOff} enabled={trkOn} elders={ElderRegistry.Count} fotRescan={fot}");
+		CpuLog.Info(
+			$"[CPUOpt] body-pin deaths={deaths} pinned={pinned} droppedNull={dropped} fot={fotBody}");
 	}
 
 	private static void CountBodies(
@@ -476,6 +679,32 @@ internal sealed class ChunkSimHost : MonoBehaviour
 		bldDyn = BuildingSimRegistry.DynamicCount;
 		bldStatic = BuildingSimRegistry.StaticCount;
 		elder = BuildingSimRegistry.ElderCount;
+	}
+
+	private void RescanForElders()
+	{
+		ElderRegistry.NoteFotRescan();
+		try
+		{
+			var elders = UnityEngine.Object.FindObjectsOfType<ElderThornbackBehaviour>(false);
+			for (int i = 0; i < elders.Length; i++)
+			{
+				var elder = elders[i];
+				if (elder == null)
+					continue;
+
+				ElderRegistry.Register(elder);
+				if (!ChunkSimState.IsActive)
+					continue;
+				var building = elder.GetComponent<BuildingEntity>();
+				if (building)
+				{
+					BuildingSimRegistry.Register(building);
+					ChunkSimBodySync.ApplyBuilding(building);
+				}
+			}
+		}
+		catch { }
 	}
 
 	private void OnDestroy()
