@@ -3,8 +3,9 @@
 bepinex plugin for **casualties unknown**. tries to keep fps from dying when you're deep in a run or hosting krokmp.
 
 not a gameplay mod - far chunks aren't kept as live objects. they're written down and built again when a window covers them.  
-  
+
 Known bugs:  
+
 - Entities spawned by Custom Structures, if they contain custom data, won't always reliably be respawned in that state. Fix ETA: 9/29
 
 ---
@@ -13,7 +14,9 @@ Known bugs:
 
 the main win. vanilla instantiates the whole layer. this mod only keeps a chunk window live.
 
-during gen, stuff outside the window is recorded instead of placed. leftover terrain outside the window comes down on the load screen. in play, leaving a chunk waits 5 seconds, then the objects, tilemap, and collider come down. coming back rebuilds them a handful per frame so the pop-in doesn't hitch.
+during gen, stuff outside the window is recorded instead of placed. leftover terrain outside the window comes down on the load screen. in play, leaving a chunk waits 5 seconds, then the objects, tilemap, and collider come down. coming back rebuilds them a handful per frame so the pop-in doesn't hitch.  
+  
+basically:
 
 window size is the video menu **Stream Window**, or `[Stream] WindowMode`:
 
@@ -39,6 +42,75 @@ other mods can ask "is this world pos in the keep window?" via `CPUOptimization2
 
 ---
 
+## how it works:
+
+During world gen:
+```cs
+Load starts
+  -> stock paints every chunk (UpdateWorld)
+  -> every Ground tilemap collider is turned on, and physics is synced
+     (placement raycasts need the whole map, including chunks that will be culled)
+  -> stock starts a scatter pass (traps, plants, enemies, traders, …)
+       each hit:
+         inside the camera window -> Instantiate, leave it live
+         outside the window       -> write a record, do not Instantiate
+            trader / enemy / item / building, including the block it sits on
+  -> structures (GenerateEntityAtPos) use the same split, child by child
+       tilemap interiors outside the window become entity records
+       the structure's block stamp is already in worldBlocks, so it is skipped
+  -> passes stock still Instantiates itself (ropes, bandages, remote traders, mini-barrels)
+       -> copied into the same arrays, then destroyed if they landed outside the window as they generate
+  -> generation finishes
+```
+After world gen:
+```cs
+FinishWorldGeneration
+  -> copy whatever is still alive into the arrays
+       elders and wall holes are marked resident and stay out of the arrays
+       order: traders, enemies, buildings, structure tilemaps, climbables,
+               sandvine hooks, oil pipes, loose items, lights
+  -> client: stop here. arrays exist, nothing is destroyed
+  -> host: loading screen, timeScale 0
+       every chunk that has a tilemap starts at phase 3 (fully live)
+       chunks inside the window stay there
+       chunks outside walk down, a few per tick:
+
+         phase 3  objects destroyed
+                  (records already exist, so nothing is written back)
+              -> phase 2  colliders off
+                          (a chunk an elder or a corpse is standing on keeps its collider)
+              -> phase 1  tilemap destroyed
+                          tile edits packed, backdrop removed
+              -> phase 0  chunk is only rows in the arrays
+
+       window chunks stay at phase 3 the whole time
+  -> loading screen off, timeScale restored
+```
+During gameplay:
+```cs
+camera / living players move
+  -> desired set = union of each living player's window
+  -> chunk entering the window:
+       phase 0  create tilemap, renderer on, collider created but off
+            -> phase 1  colliders on
+            -> phase 2  spawn from the arrays, paced:
+                        traders -> enemies -> entities -> items -> lights
+                        then register the chunk's renderers
+            -> phase 3  live
+  -> chunk leaving the window:
+       wait 5 seconds
+       (walking back to put it into the chunk window range it cancels the wait)
+       phase 3  write current health / loot / position back into the arrays,
+                then destroy the objects
+            -> phase 2  colliders off
+            -> phase 1  destroy the tilemap
+            -> phase 0  arrays only
+            (These are all capped at 128/64/40 objects per frame based on chunk window size selection of 2x2dynamic / 3x3 / 4x4)
+            (bigger window = less overall fps, but slower updates so potentially smoother on weaker pcs)
+```
+  
+  
+# Other stuff (smaller wins)
 
 
 ## screen cull
@@ -46,7 +118,7 @@ other mods can ask "is this world pos in the keep window?" via `CPUOptimization2
 off by default. the chunk window already decides what's loaded. this only hides sprites and tilemaps outside the camera view.
 
 wall holes and the chunk backdrop are left alone.  
-  
+
 (this caused flickering, may be stripped in later version)
 
 config section: `[ScreenCull]`
