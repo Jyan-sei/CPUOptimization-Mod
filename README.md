@@ -2,7 +2,10 @@
 
 bepinex plugin for **casualties unknown**. tries to keep fps from dying when you're deep in a run or hosting krokmp.
 
-not a gameplay mod - far chunks aren't kept as live objects. they're written down and built again when a window covers them.
+not a gameplay mod - far chunks aren't kept as live objects. they're written down and built again when a window covers them.  
+  
+Known bugs:  
+- Entities spawned by Custom Structures, if they contain custom data, won't always reliably be respawned in that state. Fix ETA: 9/29
 
 ---
 
