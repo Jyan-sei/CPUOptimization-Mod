@@ -1,5 +1,7 @@
 # cpu optimization 2
 
+report bugs to @jyanseivrc on discord
+
 increases frames by 500-700% in all of my tests
 (ryzen 9 5900x3d + 64gb ddr5 + rtx 3080 12gb)
 
