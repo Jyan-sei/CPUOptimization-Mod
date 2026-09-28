@@ -1,364 +1,199 @@
-using System;
-using System.Reflection;
 using BepInEx;
 using BepInEx.Configuration;
-using BepInEx.Logging;
-using CPUOptimization.Features.Lights;
-using CPUOptimization.Features.ChunkSim;
-using CPUOptimization.Features.Fluids;
-using CPUOptimization.Features.Mp;
 using HarmonyLib;
-using UnityEngine;
 
-namespace CPUOptimization;
+namespace CPUOptimization2;
 
 [BepInPlugin(PluginInfo.GUID, PluginInfo.Name, PluginInfo.Version)]
-[BepInDependency("KrokoshaCasualtiesMP", BepInDependency.DependencyFlags.SoftDependency)]
 public class Plugin : BaseUnityPlugin
 {
-	internal static ManualLogSource Log;
-
+	internal static Plugin Instance;
+	internal static BepInEx.Logging.ManualLogSource Log;
 	internal static ConfigEntry<bool> Enabled;
+	internal static ConfigEntry<bool> StreamEnabled;
+	internal static ConfigEntry<bool> VerboseLogging;
+	/// <summary>0=Dynamic2x2, 1=Fixed3x3, 2=Fixed4x4. see StreamWindowPolicy.Mode</summary>
+	internal static ConfigEntry<int> StreamWindowMode;
 
-	internal static ConfigEntry<bool> LightsEnabled;
-	internal static ConfigEntry<bool> LightsReplaceTrapLights;
-	internal static ConfigEntry<bool> LightsCullEnabled;
-	internal static ConfigEntry<float> LightsCullRadius;
-	internal static ConfigEntry<bool> LightsCullUseCameraView;
-	internal static ConfigEntry<float> LightsCullCameraMargin;
-	internal static ConfigEntry<float> LightsCullHysteresis;
-	internal static ConfigEntry<float> LightsCullIntervalSeconds;
-	internal static ConfigEntry<float> LightsRescanSeconds;
-	internal static ConfigEntry<bool> LightsDebugLog;
-	internal static ConfigEntry<bool> LightsVerboseLogging;
-	internal static ConfigEntry<float> LightsTelemetryWindowSeconds;
+	internal static ConfigEntry<bool> ScreenCullEnabled;
+	internal static ConfigEntry<float> ScreenCullIntervalSeconds;
+	internal static ConfigEntry<float> ScreenCullRescanSeconds;
+	internal static ConfigEntry<float> ScreenCullMargin;
+	internal static ConfigEntry<float> ScreenCullHysteresis;
+	internal static ConfigEntry<float> ScreenCullSpritePad;
+	internal static ConfigEntry<int> ScreenCullMaxFlipsPerPass;
+	internal static ConfigEntry<float> ScreenCullTelemetrySeconds;
 
-	internal static ConfigEntry<bool> ChunkSimEnabled;
-	internal static ConfigEntry<bool> ChunkSimMpUnionEnabled;
-	internal static ConfigEntry<bool> ChunkSimMpClientLocalSim;
-	internal static ConfigEntry<bool> ChunkSimColliders;
-	internal static ConfigEntry<bool> ChunkSimLogOnChange;
-	internal static ConfigEntry<float> ChunkSimTelemetrySeconds;
-	internal static ConfigEntry<bool> SpiderAnimThrottleEnabled;
-	internal static ConfigEntry<int> SpiderAnimThrottleFrames;
-	internal static ConfigEntry<int> ChunkUnionApplyBatchPerFrame;
-	internal static ConfigEntry<int> ChunkUnionBodySyncBatchPerFrame;
-	internal static ConfigEntry<bool> ChunkSimFreezeCrates;
+	internal static ConfigEntry<bool> RenderTuneEnabled;
+	internal static ConfigEntry<bool> RenderTuneStripUrp;
+	internal static ConfigEntry<bool> RenderTuneLights;
+	internal static ConfigEntry<float> RenderTuneLightRtScale;
+	internal static ConfigEntry<int> RenderTuneMaxLightRt;
+	internal static ConfigEntry<bool> RenderTuneConsolidateBlend;
+	internal static ConfigEntry<bool> RenderTuneDisableVolumes;
+	internal static ConfigEntry<bool> RenderTuneDisableNormals;
+	internal static ConfigEntry<float> RenderTuneLightRescanSeconds;
 
-	internal static ConfigEntry<bool> ChunkSimItemsEnabled;
-	internal static ConfigEntry<bool> ChunkSimBuildingsEnabled;
-	internal static ConfigEntry<bool> ChunkSimParticlesEnabled;
-	internal static ConfigEntry<bool> ChunkSimSoundCannonsEnabled;
-	internal static ConfigEntry<bool> ChunkSimForceForMpEnabled;
-	internal static ConfigEntry<bool> ChunkSimBuildingHealthEnabled;
-	internal static ConfigEntry<bool> ChunkSimKrokMpBypassEnabled;
-
-	internal static ConfigEntry<bool> FluidsEnabled;
-	internal static ConfigEntry<float> FluidsRenderIntervalSeconds;
-	internal static ConfigEntry<bool> FluidsSpreadRender;
-	internal static ConfigEntry<int> FluidsRenderColumnsPerFrame;
-	internal static ConfigEntry<int> FluidsSimIntervalFixedFrames;
-
-	internal static ConfigEntry<bool> KrokMpPerfEnabled;
-	internal static ConfigEntry<int> KrokMpPerfOnWillRenderInterval;
-	internal static ConfigEntry<int> KrokMpPerfOnWillRenderInvokeBudget;
-	internal static ConfigEntry<int> KrokMpPerfOnWillRenderTrapBudget;
-	internal static ConfigEntry<int> KrokMpPerfOnWillRenderTraderBudget;
-	internal static ConfigEntry<int> KrokMpPerfDespawnerFrameSkip;
-	internal static ConfigEntry<bool> KrokMpPerfGateChunkSim;
-	internal static ConfigEntry<bool> KrokMpPerfVoicechatEarlyOut;
-
-	internal static ConfigEntry<bool> DisableWallflowers;
+	internal static ConfigEntry<bool> PotatoUiEnabled;
 
 	private Harmony _harmony;
 
 	private void Awake()
 	{
+		Instance = this;
 		Log = Logger;
-		CpuLog.Info($"[CPUOpt] v{PluginInfo.Version}");
-
 		Enabled = Config.Bind("General", "Enabled", true,
-			"master switch for all cpu opt features");
+			"capture world objects after gen and sanity-check counts in the log");
+		StreamEnabled = Config.Bind("Stream", "Enabled", true,
+			"ghost place outside the cam window during gen, cull leftover terrain on the load screen, 5s unload grace in play. MP: host streams union of per-player windows; clients capture only");
+		VerboseLogging = Config.Bind("Stream", "VerboseLogging", false,
+			"log every chunk load/unload. off by default, spam costs frame time");
+		StreamWindowMode = Config.Bind("Stream", "WindowMode", 1,
+			"0=2x2/2x3 ultrawide dynamic, 1=fixed 3x3, 2=fixed 4x4. object spawn/destroy caps: 128 / 64 / 40 per frame. spawns eat the budget first. video dropdown writes this mid-run");
 
-		LightsEnabled = Config.Bind("Lights", "Enabled", true,
-			"local light2d cull + trap sprite flash");
-		LightsReplaceTrapLights = Config.Bind("Lights", "ReplaceTrapLights", true,
-			"kill jumppad/coil/turret/sidestabber light2d, flash sprites instead (floor spike trap keeps blinking light)");
-		LightsCullEnabled = Config.Bind("Lights", "CullEnabled", true,
-			"turn off decorative light2d past cull radius from camera");
-		LightsCullRadius = Config.Bind("Lights", "CullRadius", 72f,
-			"world units from camera where lights stay on (fallback if cull use camera view is off, lights come on a bit farther out)");
-		LightsCullUseCameraView = Config.Bind("Lights", "CullUseCameraView", true,
-			"derive cull radius from ortho view (1.1x visible corner, then a bit extra). off = fixed cull radius");
-		LightsCullCameraMargin = Config.Bind("Lights", "CullCameraMargin", 1.1f,
-			"multiplier on visible corner distance for light cull on-radius (extra so lights don't pop on-screen)");
-		LightsCullHysteresis = Config.Bind("Lights", "CullHysteresis", 24f,
-			"extra distance before a culled light turns off (stops flicker)");
-		LightsCullIntervalSeconds = Config.Bind("Lights", "CullIntervalSeconds", 0.35f,
-			"how often to re-check light on/off");
-		LightsRescanSeconds = Config.Bind("Lights", "RescanSeconds", 2.5f,
-			"deprecated, ignored. light2d register via onenable now");
-		LightsDebugLog = Config.Bind("Lights", "DebugLog", true,
-			"periodic light cull counter logs");
-		LightsVerboseLogging = Config.Bind("Lights", "VerboseLogging", false,
-			"log every trap light conversion");
-		LightsTelemetryWindowSeconds = Config.Bind("Lights", "TelemetryWindowSeconds", 10f,
-			"seconds between light telemetry lines");
+		ScreenCullEnabled = Config.Bind("ScreenCull", "Enabled", false,
+			"off by default. chunk window decides whats loaded. flip this to hide sprites and tilemaps outside the ortho view");
+		// old builds wrote Enabled=true as the default and bepinex keeps that.
+		// first launch after 0.7.13 forces it off once. flip Enabled back on if you want the culler.
+		var cullOffMigrated = Config.Bind("ScreenCull", "OffByDefault", false,
+			"set once when the in-frame culler default flipped off. leave this alone");
+		if (!cullOffMigrated.Value)
+		{
+			ScreenCullEnabled.Value = false;
+			cullOffMigrated.Value = true;
+		}
+		ScreenCullIntervalSeconds = Config.Bind("ScreenCull", "IntervalSeconds", 0.35f,
+			"how often a batch of tracked renderers gets rechecked");
+		ScreenCullRescanSeconds = Config.Bind("ScreenCull", "RescanSeconds", 2.5f,
+			"how often to refresh the tracked renderer list");
+		ScreenCullMargin = Config.Bind("ScreenCull", "Margin", 1.15f,
+			"multiply ortho half-extents for the on box (>1 = slack)");
+		ScreenCullHysteresis = Config.Bind("ScreenCull", "Hysteresis", 4f,
+			"extra world units on the off box so edge stuff doesnt flicker");
+		ScreenCullSpritePad = Config.Bind("ScreenCull", "SpritePad", 2f,
+			"half-extent pad when testing sprites against the view box");
+		ScreenCullMaxFlipsPerPass = Config.Bind("ScreenCull", "MaxFlipsPerPass", 32,
+			"cap enable/disable writes per batch so we dont thrash");
+		ScreenCullTelemetrySeconds = Config.Bind("ScreenCull", "TelemetrySeconds", 0f,
+			"log cull stats every n seconds. 0 = off");
 
-		ChunkSimEnabled = Config.Bind("ChunkSim", "Enabled", true,
-			"sim rb only in active chunk window (sp: 2x2 around camera; mp: union per player)");
-		ChunkSimMpUnionEnabled = Config.Bind("ChunkSim", "MpUnionEnabled", true,
-			"when krokmp is running, host uses union of each living player's 2x2 window plus dead player corpses");
-		ChunkSimMpClientLocalSim = Config.Bind("ChunkSim", "MpClientLocalSim", true,
-			"mp clients: sim/cull local 2x2 only. host/listen server always uses union");
-		ChunkSimColliders = Config.Bind("ChunkSim", "ChunkColliders", false,
-			"enable composite collider2d only on active 2x2 chunks (252 others off)");
-		ChunkSimLogOnChange = Config.Bind("ChunkSim", "LogOnWindowChange", true,
-			"log camera/block/chunk coords when 2x2 window moves");
-		ChunkSimTelemetrySeconds = Config.Bind("ChunkSim", "TelemetrySeconds", 10f,
-			"periodic chunk-sim stats. 0 = window-change logs only");
-		SpiderAnimThrottleEnabled = Config.Bind("ChunkSim", "SpiderAnimThrottleEnabled", true,
-			"frame-skip idle spider leg/ik updates. elders/combat exempt");
-		SpiderAnimThrottleFrames = Config.Bind("ChunkSim", "SpiderAnimThrottleFrames", 2,
-			"run idle spider anim every n frames (2 = half rate)");
-		ChunkUnionApplyBatchPerFrame = Config.Bind("ChunkSim", "ChunkUnionApplyBatchPerFrame", 2,
-			"mp union collider toggles per frame (spread union rebuild hitches)");
-		ChunkUnionBodySyncBatchPerFrame = Config.Bind("ChunkSim", "ChunkUnionBodySyncBatchPerFrame", 128,
-			"mp union building/item sync entries per frame after union change");
-		ChunkSimFreezeCrates = Config.Bind("ChunkSim", "FreezeCrates", false,
-			"when disabling terrain colliders for a chunk, set far DamagingCrate/FallingCrate to isKinematic=true (static collider for local items/collision/hover) + vel=0 so they don't fall through; become dynamic when chunk in window");
+		RenderTuneEnabled = Config.Bind("RenderTune", "Enabled", false,
+			"master switch for potato URP/lights. off by default — Super Potato Lighting video checkbox flips this only");
+		RenderTuneStripUrp = Config.Bind("RenderTune", "StripUrp", true,
+			"when RenderTune is on: msaa off, depth/opaque off, sorting-layer rt off, trim heavy renderer features");
+		RenderTuneLights = Config.Bind("RenderTune", "TuneLights", true,
+			"when RenderTune is on: cheapen light2d — one multiply slot, kill volumes/normals");
+		RenderTuneLightRtScale = Config.Bind("RenderTune", "LightRtScale", 0.35f,
+			"urp 2d light rt scale (stock is often 0.5). lower = cheaper multiply pass");
+		RenderTuneMaxLightRt = Config.Bind("RenderTune", "MaxLightRenderTextures", 8,
+			"cap concurrent light rts (stock often 16)");
+		RenderTuneConsolidateBlend = Config.Bind("RenderTune", "ConsolidateMultiplyBlend", true,
+			"remap multiply-family lights onto one blend style index");
+		RenderTuneDisableVolumes = Config.Bind("RenderTune", "DisableLightVolumes", true,
+			"zero light2d volumetric intensity");
+		RenderTuneDisableNormals = Config.Bind("RenderTune", "DisableLightNormals", true,
+			"force light2d normal maps off");
+		RenderTuneLightRescanSeconds = Config.Bind("RenderTune", "LightRescanSeconds", 2.5f,
+			"how often to scan for new lights to tune");
 
-		ChunkSimItemsEnabled = Config.Bind("ChunkSim", "ItemsEnabled", true,
-			"apply sleep/wake to loose items outside the sim window");
-		ChunkSimBuildingsEnabled = Config.Bind("ChunkSim", "BuildingsEnabled", true,
-			"apply static/dynamic rb + update skip to buildings outside window (elders/dying exempt)");
-		ChunkSimParticlesEnabled = Config.Bind("ChunkSim", "ParticlesEnabled", true,
-			"cull particle systems for droppers/caveticks/trees outside window");
-		ChunkSimSoundCannonsEnabled = Config.Bind("ChunkSim", "SoundCannonsEnabled", true,
-			"disable soundcannons + krokmpsoundcannon trackers outside window");
-		ChunkSimForceForMpEnabled = Config.Bind("ChunkSim", "ForceForMpEnabled", true,
-			"disable force-for-mp (trap/trader) components outside window");
-		ChunkSimBuildingHealthEnabled = Config.Bind("ChunkSim", "BuildingHealthEnabled", true,
-			"track health changes + process dying buildings for opt");
-		ChunkSimKrokMpBypassEnabled = Config.Bind("ChunkSim", "KrokMpBypassEnabled", true,
-			"bypass krokmp's building optimize patch so chunk-sim controls bodyType");
-
-		FluidsEnabled = Config.Bind("Fluids", "Enabled", true,
-			"align fluid sim/render range with chunksim window, spread renderfluids");
-		FluidsRenderIntervalSeconds = Config.Bind("Fluids", "RenderIntervalSeconds", 0.15f,
-			"min seconds between fluid particle render passes (vanilla 0.1)");
-		FluidsSpreadRender = Config.Bind("Fluids", "SpreadRender", true,
-			"spread renderfluids across frames by column batches");
-		FluidsRenderColumnsPerFrame = Config.Bind("Fluids", "RenderColumnsPerFrame", 32,
-			"block columns per frame when spread render is on");
-		FluidsSimIntervalFixedFrames = Config.Bind("Fluids", "SimIntervalFixedFrames", 1,
-			"run SimulationStep only every N FixedUpdates (1 = every frame)");
-
-		KrokMpPerfEnabled = Config.Bind("KrokMpPerf", "Enabled", true,
-			"harmony perf patches for krokmp host/client overhead");
-		KrokMpPerfOnWillRenderInterval = Config.Bind("KrokMpPerf", "OnWillRenderIntervalFrames", 6,
-			"run krokosha onwillrender forceformp every n frames (host). 1 = every frame");
-		KrokMpPerfOnWillRenderInvokeBudget = Config.Bind("KrokMpPerf", "OnWillRenderInvokeBudgetPerTick", 8,
-			"max forced onwillrender invokes per tick for unknown target types");
-		KrokMpPerfOnWillRenderTrapBudget = Config.Bind("KrokMpPerf", "OnWillRenderTrapInvokeBudgetPerTick", 6,
-			"max gunmine/stalactite forceformp invokes per tick");
-		KrokMpPerfOnWillRenderTraderBudget = Config.Bind("KrokMpPerf", "OnWillRenderTraderInvokeBudgetPerTick", 2,
-			"max trader forceformp invokes per tick");
-		KrokMpPerfDespawnerFrameSkip = Config.Bind("KrokMpPerf", "DespawnerFrameSkip", 4,
-			"run item despawner if untouched every n frames; timer scaled to match");
-		KrokMpPerfGateChunkSim = Config.Bind("KrokMpPerf", "GateChunkSim", true,
-			"skip krokmp perf targets outside cpuopt chunk window");
-		KrokMpPerfVoicechatEarlyOut = Config.Bind("KrokMpPerf", "VoicechatEarlyOut", true,
-			"skip voicechat.update when vc disabled and mic not recording");
-
-		DisableWallflowers = Config.Bind("WorldGen", "DisableWallflowers", true,
-			"completely prevent wallflower from spawning");
-
-		// A/B testing: ChunkSim core + 2.2 + Items + Force + Freeze ON; Colliders OFF; glowplants/lightbulbs exempted from item sleep (stay forever) (Batch 3 + 4 unchanged)
-
-		// Batch 1: ChunkSim Window Core - ENABLED
-		ChunkSimEnabled.Value = true;
-		ChunkSimMpUnionEnabled.Value = true;
-		ChunkSimMpClientLocalSim.Value = true;
-		ChunkSimLogOnChange.Value = true;
-		ChunkSimTelemetrySeconds.Value = 10f;
-		ChunkUnionApplyBatchPerFrame.Value = 2;
-		ChunkUnionBodySyncBatchPerFrame.Value = 128;
-		SpiderAnimThrottleEnabled.Value = true;
-		SpiderAnimThrottleFrames.Value = 2;
-
-		// 2.1 - ChunkSimCollider - DISABLED (per user request)
-		ChunkSimColliders.Value = false;
-
-		// 2.2 - ENABLED
-		ChunkSimBuildingsEnabled.Value = true;
-		ChunkSimSoundCannonsEnabled.Value = true;
-		ChunkSimParticlesEnabled.Value = true;
-		ChunkSimBuildingHealthEnabled.Value = true;
-		ChunkSimKrokMpBypassEnabled.Value = true;
-
-		// Items + Freeze - ENABLED
-		ChunkSimItemsEnabled.Value = true;
-		ChunkSimFreezeCrates.Value = true;
-
-		// 2.3 - ChunkSimForceForMPEnabled - ENABLED
-		ChunkSimForceForMpEnabled.Value = true;
-
-		// Batch 3: KrokMpPerf ON (full, including gate)
-		KrokMpPerfEnabled.Value = true;
-		KrokMpPerfGateChunkSim.Value = true;
-
-		// Batch 4: Visual & Fluids ON
-		LightsEnabled.Value = true;
-		LightsReplaceTrapLights.Value = true;
-		LightsCullEnabled.Value = true;
-		LightsCullUseCameraView.Value = true;
-		LightsDebugLog.Value = true;
-		FluidsEnabled.Value = true;
-		FluidsSimIntervalFixedFrames.Value = 2;
-		DisableWallflowers.Value = true;
+		PotatoUiEnabled = Config.Bind("PotatoUi", "Enabled", false,
+			"potato HUD/UI tweaks. default off; Super Potato Lighting never sets this. manual cfg flip only");
 
 		if (!Enabled.Value)
 		{
-			CpuLog.Info("[CPUOpt] disabled via config.");
+			Log.LogInfo("disabled via config.");
 			return;
 		}
 
 		_harmony = new Harmony(PluginInfo.GUID);
+		FinishWorldGenerationPatch.Apply(_harmony);
+		VisibilityStreamPatch.Apply(_harmony);
+		TraderPatches.Apply(_harmony);
+		GenGhostPlace.Apply(_harmony);
+		ClimbablePatches.Apply(_harmony);
+		ElderThornbackPatches.Apply(_harmony);
+		PreStartDestroyPatches.Apply(_harmony);
+		ElderResident.TryHookSpawn(_harmony);
+		ModBehaviourState.Install(_harmony);
+		ChunkUpdateGuard.Apply(_harmony);
+		RenderTune.ApplyHarmony(_harmony);
+		_harmony.PatchAll(typeof(SettingsMenuPotatoToggle));
 
-		if (LightsEnabled.Value)
-			LightOptBootstrap.Register(_harmony, gameObject);
+		if (RenderTuneEnabled.Value)
+			RenderTune.Apply();
+		if (PotatoUiEnabled.Value)
+			PotatoUi.Apply();
 
-		if (ChunkSimEnabled.Value)
-			ChunkSimBootstrap.Register(_harmony, gameObject);
+		Log.LogInfo(
+			$"loaded v{PluginInfo.Version} renderTune={(RenderTuneEnabled.Value ? 1 : 0)} " +
+			$"potatoUi={(PotatoUiEnabled.Value ? 1 : 0)}");
+	}
 
-		if (FluidsEnabled.Value)
-			FluidManagerPerfBootstrap.Apply(_harmony);
+	private void Update()
+	{
+		if (Enabled == null || !Enabled.Value)
+			return;
 
-		if (DisableWallflowers.Value)
-			WallflowerPatches.Apply(_harmony);
+		// one retry after every plugin has awoken. no per-frame type scan after that.
+		ElderResident.NotifyUpdate();
+		ElderResident.TryHookSpawn(_harmony);
+		AltarBlessing.NotifyUpdate();
+		ModBehaviourState.NotifyUpdate();
 
-		KrokMpOptional.Resolve();
-		CpuLog.Info(
-			$"[CPUOpt] loaded v{PluginInfo.Version} lights={(LightsEnabled.Value ? 1 : 0)} " +
-			$"chunkSim={(ChunkSimEnabled.Value ? 1 : 0)} mpUnion={(ChunkSimMpUnionEnabled.Value ? 1 : 0)} " +
-			$"mpClientLocal={(ChunkSimMpClientLocalSim.Value ? 1 : 0)} fluids={(FluidsEnabled.Value ? 1 : 0)} " +
-			$"krokPerf={(KrokMpPerfEnabled.Value ? 1 : 0)} krokmp={(KrokMpOptional.IsPresent ? 1 : 0)} " +
-			$"items={(ChunkSimItemsEnabled?.Value == true ? 1 : 0)} bldgs={(ChunkSimBuildingsEnabled?.Value == true ? 1 : 0)} " +
-			$"particles={(ChunkSimParticlesEnabled?.Value == true ? 1 : 0)} soundcannons={(ChunkSimSoundCannonsEnabled?.Value == true ? 1 : 0)} " +
-			$"forceformp={(ChunkSimForceForMpEnabled?.Value == true ? 1 : 0)} wallflower={(DisableWallflowers.Value ? 0 : 1)} " +
-			$"fluidSimEvery={FluidsSimIntervalFixedFrames?.Value ?? 1}");
+		// menus first. works even when WorldGeneration.world is null (main menu)
+		MenuFrameCap.Tick();
 
-		try
+		RenderTune.Tick(UnityEngine.Time.unscaledDeltaTime);
+		PotatoUi.Tick();
+
+		WorldGeneration world = WorldGeneration.world;
+		if (world == null)
+			return;
+
+		if (world.generatingWorld)
 		{
-			KrokMpPerfBootstrap.EnsureDeferred(_harmony, gameObject);
-			if (!gameObject.GetComponent<KrokMpPerfTickHost>())
-				gameObject.AddComponent<KrokMpPerfTickHost>();
+			// new gen started. wipe the finished capture, dont touch in-progress ghost records
+			if (CaptureStore.Captured || StreamState.Active || StreamState.Bootstrapping)
+			{
+				CaptureStore.Clear();
+				StreamController.Deactivate();
+				StreamState.ResetForNewGenerate();
+				RenderTune.Reset();
+				PotatoUi.Reset();
+				GenGhostPlace.Reset();
+				Log.LogInfo("generatingWorld rose again — capture/stream cleared.");
+			}
+			return;
 		}
-		catch (Exception ex)
+
+		if (!world.worldExists)
+			return;
+
+		// bootstrap arms right after capture. tile wait is capture-only mode
+		if (!StreamState.Active)
+			TileMatrixCapture.CaptureIfReady(world);
+
+		if (StreamEnabled != null && StreamEnabled.Value && CaptureStore.Captured && !StreamState.Active
+			&& CaptureStore.TileCaptureDone && MpSession.AllowStream)
 		{
-			CpuLog.Warn($"[CPUOpt] KrokMP perf bootstrap host failed: {ex.Message}");
+			StreamController.Activate(world);
 		}
+
+		// elders move while the window is settled, so this runs even when the stream tick is idle
+		if (StreamState.Active)
+			StreamController.MaintainElders(world);
+
+		// settled means skip the tick, visibility Sync already bails early
+		if (StreamController.NeedsTick)
+			StreamController.Tick(world);
+
+		ScreenCull.Tick(world);
 	}
 
 	private void OnDestroy()
 	{
+		if (Instance == this)
+			Instance = null;
 		_harmony?.UnpatchSelf();
-	}
-}
-
-internal static class PluginInfo
-{
-	public const string GUID = "com.local.cpu.optimization";
-	public const string Name = "CPUOptimization";
-	public const string Version = "0.5.22";
-}
-
-internal static class WallflowerPatches
-{
-	private static int _blocked;
-	private static bool _logged;
-
-	internal static void Apply(Harmony harmony)
-	{
-		int patched = 0;
-		foreach (var method in typeof(UnityEngine.Object).GetMethods(BindingFlags.Public | BindingFlags.Static))
-		{
-			if (method.Name != "Instantiate")
-				continue;
-			try
-			{
-				harmony.Patch(method, prefix: new HarmonyMethod(typeof(WallflowerPatches), nameof(InstantiatePrefix)));
-				patched++;
-			}
-			catch
-			{
-			}
-		}
-
-		foreach (var method in typeof(Utils).GetMethods(BindingFlags.Public | BindingFlags.Static))
-		{
-			if (method.Name != "Create")
-				continue;
-			try
-			{
-				harmony.Patch(method, prefix: new HarmonyMethod(typeof(WallflowerPatches), nameof(CreatePrefix)));
-				patched++;
-			}
-			catch
-			{
-			}
-		}
-
-		var distribute = AccessTools.Method(typeof(WorldGeneration), "DistributeEntities");
-		if (distribute != null)
-		{
-			harmony.Patch(distribute, prefix: new HarmonyMethod(typeof(WallflowerPatches), nameof(DistributePrefix)));
-			patched++;
-		}
-
-		CpuLog.Info($"[CPUOpt] wallflower spawn block patched={patched}");
-	}
-
-	static bool IsWallflower(UnityEngine.Object original)
-	{
-		if (original == null || original.name == null)
-			return false;
-		return original.name.IndexOf("wallflower", StringComparison.OrdinalIgnoreCase) >= 0;
-	}
-
-	static void NoteBlocked()
-	{
-		_blocked++;
-		if (_logged)
-			return;
-		_logged = true;
-		CpuLog.Info("[CPUOpt] wallflower spawn blocked");
-	}
-
-	static bool InstantiatePrefix(UnityEngine.Object original, ref UnityEngine.Object __result)
-	{
-		if (!IsWallflower(original))
-			return true;
-		__result = null;
-		NoteBlocked();
-		return false;
-	}
-
-	static bool CreatePrefix(string id, ref GameObject __result)
-	{
-		if (id == null || id.IndexOf("wallflower", StringComparison.OrdinalIgnoreCase) < 0)
-			return true;
-		__result = null;
-		NoteBlocked();
-		return false;
-	}
-
-	static bool DistributePrefix(GameObject basObj)
-	{
-		if (!IsWallflower(basObj))
-			return true;
-		NoteBlocked();
-		return false;
 	}
 }
