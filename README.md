@@ -8,6 +8,7 @@ increases frames by 500-700% in all of my tests
 for friends on weak pcs / laptops with mobile cpu/gpus
 increase was 100-200%
 
+(image displays current optimization vs previous iteration of this mod vs vanilla game in wasteland)
 <img width="1469" height="544" alt="image" src="https://github.com/user-attachments/assets/6eb07ec7-f1ca-482e-a41b-4e2b6d3ced44" />
 
 
