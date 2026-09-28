@@ -45,7 +45,9 @@ other mods can ask "is this world pos in the keep window?" via `CPUOptimization2
 
 off by default. the chunk window already decides what's loaded. this only hides sprites and tilemaps outside the camera view.
 
-wall holes and the chunk backdrop are left alone.
+wall holes and the chunk backdrop are left alone.  
+  
+(this caused flickering, may be stripped in later version)
 
 config section: `[ScreenCull]`
 
