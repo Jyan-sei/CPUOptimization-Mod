@@ -1,6 +1,6 @@
 # cpu optimization 2
 
-report bugs to @jyanseivrc on discord
+report bugs to @jyanmoon on discord
 
 increases frames by 500-700% in all of my tests
 (ryzen 9 5900x3d + 64gb ddr5 + rtx 3080 12gb)
@@ -11,14 +11,6 @@ increase was 100-200%
 (image displays current optimization vs previous iteration of this mod vs vanilla game in wasteland)
 <img width="1469" height="544" alt="image" src="https://github.com/user-attachments/assets/6eb07ec7-f1ca-482e-a41b-4e2b6d3ced44" />
 
-
-bepinex plugin for **casualties unknown**. tries to keep fps from dying when you're deep in a run or hosting krokmp.
-
-not a gameplay mod - far chunks aren't kept as live objects. they're written down and built again when a window covers them.  
-
-Known bugs:  
-
-- Entities spawned by Custom Structures, if they contain custom data, won't always reliably be respawned in that state. Fix ETA: 9/29
 
 ---
 
