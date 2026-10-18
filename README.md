@@ -1,6 +1,6 @@
 # cpu optimization 2
 
-report bugs to @jyanseivrc on discord
+report bugs to @jyanmoon on discord
 
 increases frames by 500-700% in all of my tests
 (ryzen 9 5900x3d + 64gb ddr5 + rtx 3080 12gb)
@@ -12,16 +12,7 @@ increase was 100-200%
 <img width="1469" height="544" alt="image" src="https://github.com/user-attachments/assets/6eb07ec7-f1ca-482e-a41b-4e2b6d3ced44" />
 
 
-bepinex plugin for **casualties unknown**. tries to keep fps from dying when you're deep in a run or hosting krokmp.
-
-not a gameplay mod - far chunks aren't kept as live objects. they're written down and built again when a window covers them.  
-
-Known bugs:  
-
-- Entities spawned by Custom Structures, if they contain custom data, won't always reliably be respawned in that state. Fix ETA: 9/29
-
 ---
-
 ## chunk stream
 
 the main win. vanilla instantiates the whole layer. this mod only keeps a chunk window live.
@@ -120,59 +111,32 @@ camera / living players move
             (These are all capped at 128/64/40 objects per frame based on chunk window size selection of 2x2dynamic / 3x3 / 4x4)
             (bigger window = less overall fps, but slower updates so potentially smoother on weaker pcs)
 ```
-  
-  
-# Other stuff (smaller wins)
 
+## what it does
 
-## screen cull
-
-off by default. the chunk window already decides what's loaded. this only hides sprites and tilemaps outside the camera view.
-
-wall holes and the chunk backdrop are left alone.  
-
-(this caused flickering, may be stripped in later version)
-
-config section: `[ScreenCull]`
-
----
-
-
-
-## potato lighting
-
-off by default. video menu **Super Potato Lighting** flips it immediately. unchecking puts stock lighting back.  
-if you are desperate for frames, this will give you a slight edge.
-
-- smaller light render targets, and fewer of them (8 instead of the usual 16)
-- multiply lights share one blend slot
-- volumetric glow and light normal maps off
-- msaa, depth, and some heavy renderer features off
-
-config section: `[RenderTune]`
-
----
-
-
-
-## menus
-
-main menu, pause, and the settings menu are capped at 60 fps. your video framerate setting is put back when those close.
-
----
-
-
-
-## config file
-
-`BepInEx/config/com.local.worldcapture.cfg`
-
-`[General] Enabled` is the master switch. `[Stream] Enabled` defaults on. if an entity pops in as you walk up to it, that's the stream working. `[Stream] VerboseLogging` logs every chunk load and unload and costs frame time. leave it off.
-
----
-
-
-
-## logs
-
-bepienx/logoutput.log ->`CPUOptimization2`. capture counts, stream window moves, and potato on/off are prefixed that way.
+- chunk streaming - far chunks and their contents aren't kept as live objects. they're written down and built again when you get close
+- unload wait - walking away waits about 5 seconds before a chunk comes down. walking back cancels that
+- paced rebuild - a chunk comes back a few objects per frame, so walking into it doesn't hitch
+- window size - video menu **Stream Window**. smaller keeps less of the map up and runs lighter. bigger keeps more up
+- single player - the window follows your camera
+- multiplayer host - the window covers every living player
+- multiplayer client - the window follows your camera
+- dead players - the ground under a corpse stays solid so the body doesn't fall through the map
+- elders and graboids - they stay in the world the whole run, and the ground under them stays solid
+- wall holes - they stay. their lights and sounds turn off when you're far
+- buildings - health, open doors, lights, and ammo in a mag are saved before a building is removed, and put back on the new one
+- chests - what's inside is saved and put back
+- traders - stock, what you already bought, and reputation come back with the trader
+- worn gear - stuff you're wearing or carrying isn't deleted with the chunk
+- chunk edges - a thin wall sits where a loaded chunk meets an unloaded one, so items and water stop there
+- colliders and chunk pictures - off unless you turn them on. taking them down helps fps. putting them back can stutter on a weak pc
+- faster layer load - off unless you turn it on. the map fills in the background, you get placed sooner, and buildings show up a few at a time
+- screen cull - off unless you turn it on. hides sprites and tilemaps outside the camera. can flicker
+- potato lighting - video menu **Super Potato Lighting**. cheaper lights. a small fps bump. screen overlays stay on
+- menus - main menu, pause, and settings run at 60 fps. your video framerate comes back when they close
+- hitch recovery - a long frame doesn't make physics replay a big backlog on the next one
+- camera - once you're still, it stops writing the same follow every frame
+- hud - bars and numbers that didn't change aren't redrawn
+- invisible overlays - full-screen images you can't see aren't drawn
+- continue button photo - the qol layer picture sits behind the button frame
+- other mods - they can ask if a spot is inside the keep window. stream off always answers yes
