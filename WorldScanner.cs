@@ -29,6 +29,12 @@ internal static class WorldScanner
 		HashSet<int> claimedBuildings = new HashSet<int>();
 		HashSet<int> claimedTransforms = new HashSet<int>();
 
+		int traders0 = CaptureStore.Traders.Count;
+		int enemies0 = CaptureStore.Enemies.Count;
+		int entities0 = CaptureStore.Entities.Count;
+		int items0 = CaptureStore.WorldItems.Count;
+		int lights0 = CaptureStore.Lights.Count;
+
 		StructureCatalog.EnsureIndex();
 		ChunkBackdrop.Sample(world);
 		// cull already ran. IsResident kept them alive. this keeps them out of the arrays.
@@ -36,6 +42,7 @@ internal static class WorldScanner
 		CaptureTraders(world, claimedBuildings);
 		CaptureEnemies(world, claimedBuildings);
 		CaptureBuildingEntities(world, claimedBuildings, claimedTransforms, claimedItems, playerRoot);
+		CaptureBackgroundShells(world, claimedTransforms);
 		CaptureStructureTilemaps(world, claimedTransforms, claimedItems, playerRoot);
 		CaptureClimbablesWithoutBuilding(world, claimedTransforms);
 		// wallholes stay resident. not streamed as EntityRecords
@@ -44,6 +51,13 @@ internal static class WorldScanner
 		CaptureOilPipes(world, claimedTransforms);
 		CaptureWorldItems(world, claimedItems, playerRoot);
 		CaptureLights(world, claimedBuildings, claimedTransforms, playerRoot);
+		// starting pod is already live. give its interior a manual culling box before play
+		StructureTilemapVault.WakeAll(world);
+
+		// rows added here are objects still in the scene. ghost rows from gen stay unmarked
+		// so the spawn window can instantiate them. gen's camera is not the final spawn.
+		if (mergeLiveOnly)
+			MarkLiveTail(traders0, enemies0, entities0, items0, lights0);
 
 		CaptureStore.Captured = true;
 		Plugin.Log.LogInfo(
@@ -55,6 +69,20 @@ internal static class WorldScanner
 				? $" (ghost during gen: e={CaptureStore.GhostEntityCount} n={CaptureStore.GhostEnemyCount} " +
 				  $"i={CaptureStore.GhostItemCount} t={CaptureStore.GhostTraderCount})"
 				: ""));
+	}
+
+	private static void MarkLiveTail(int traders0, int enemies0, int entities0, int items0, int lights0)
+	{
+		for (int i = traders0; i < CaptureStore.Traders.Count; i++)
+			CaptureStore.Traders[i].LiveAtCapture = true;
+		for (int i = enemies0; i < CaptureStore.Enemies.Count; i++)
+			CaptureStore.Enemies[i].LiveAtCapture = true;
+		for (int i = entities0; i < CaptureStore.Entities.Count; i++)
+			CaptureStore.Entities[i].LiveAtCapture = true;
+		for (int i = items0; i < CaptureStore.WorldItems.Count; i++)
+			CaptureStore.WorldItems[i].LiveAtCapture = true;
+		for (int i = lights0; i < CaptureStore.Lights.Count; i++)
+			CaptureStore.Lights[i].LiveAtCapture = true;
 	}
 
 	private static void CaptureTraders(WorldGeneration world, HashSet<int> claimedBuildings)
@@ -72,6 +100,7 @@ internal static class WorldScanner
 				claimedBuildings.Add(build.GetInstanceID());
 
 			TraderRecord record = FillTrader(world, trader, build);
+			ChunkRoster.Note(trader.gameObject);
 			CaptureStore.Traders.Add(record);
 		}
 	}
@@ -96,7 +125,7 @@ internal static class WorldScanner
 			if (build != null)
 				claimedBuildings.Add(build.GetInstanceID());
 
-			CaptureStore.Enemies.Add(new EnemyRecord
+			EnemyRecord spiderRec = new EnemyRecord
 			{
 				Chunk = ChunkAt(world, spider.transform.position),
 				Id = PrefabName(spider.gameObject, build),
@@ -105,7 +134,10 @@ internal static class WorldScanner
 				Position = spider.transform.position,
 				RotationZ = spider.transform.eulerAngles.z,
 				ScaleNegX = spider.transform.localScale.x < 0f ? true : (bool?)null,
-			});
+			};
+			ChunkRoster.Note(spider.gameObject);
+			StructureLiveState.CaptureEnemy(spider.gameObject, spiderRec);
+			CaptureStore.Enemies.Add(spiderRec);
 		}
 
 		BuildingEntity[] buildings = Object.FindObjectsOfType<BuildingEntity>();
@@ -121,7 +153,7 @@ internal static class WorldScanner
 			}
 
 			claimedBuildings.Add(build.GetInstanceID());
-			CaptureStore.Enemies.Add(new EnemyRecord
+			EnemyRecord animalRec = new EnemyRecord
 			{
 				Chunk = ChunkAt(world, build.transform.position),
 				Id = PrefabName(build.gameObject, build),
@@ -130,7 +162,10 @@ internal static class WorldScanner
 				Position = build.transform.position,
 				RotationZ = build.transform.eulerAngles.z,
 				ScaleNegX = build.transform.localScale.x < 0f ? true : (bool?)null,
-			});
+			};
+			ChunkRoster.Note(build.gameObject);
+			StructureLiveState.CaptureEnemy(build.gameObject, animalRec);
+			CaptureStore.Enemies.Add(animalRec);
 		}
 	}
 
@@ -153,6 +188,15 @@ internal static class WorldScanner
 			if (ElderResident.IsResident(world, build.transform))
 			{
 				claimedBuildings.Add(id);
+				continue;
+			}
+
+			if (LifepodGroups.TryGroup(build, claimedBuildings, out Transform groupRoot))
+			{
+				EntityRecord grouped = LifepodGroups.BuildRecord(world, groupRoot);
+				LifepodGroups.Stamp(groupRoot, grouped, claimedItems, playerRoot);
+				claimedTransforms.Add(groupRoot.GetInstanceID());
+				CaptureStore.Entities.Add(grouped);
 				continue;
 			}
 
@@ -185,11 +229,15 @@ internal static class WorldScanner
 			if (dropper != null)
 				record.StalactiteDropped = FieldAccess.Get<bool>(dropper, "dropped");
 
+			StructureLiveState.NoteCannon(build.gameObject, record);
+
 			ScrapEaterScript eater = build.GetComponent<ScrapEaterScript>();
 			if (eater != null)
 				record.ScrapAmount = eater.scrapAmount;
 
 			record.ModState = ModBehaviourState.Capture(build.gameObject);
+			ChunkRoster.Note(build.gameObject);
+			StructureLiveState.CaptureEntity(build.gameObject, build, record);
 			CaptureStore.Entities.Add(record);
 		}
 	}
@@ -236,6 +284,8 @@ internal static class WorldScanner
 			record.StructureVaultKey = StructureTilemapVault.EnsureTemplate(child.gameObject, id);
 			if (seated != null)
 				BuildingLoot.Capture(seated, record, claimedItems, playerRoot);
+			ChunkRoster.Note(child.gameObject);
+			StructureLiveState.CaptureEntity(child.gameObject, seated, record);
 			CaptureStore.Entities.Add(record);
 		}
 	}
@@ -264,14 +314,23 @@ internal static class WorldScanner
 			Chunk = ChunkAt(world, trader.transform.position),
 			Position = trader.transform.position,
 			Health = build != null ? build.health : 0f,
-			Character = trader.character,
+			RequireGround = build == null || build.requireGround,
+			HasBlockPlacedOn = build != null,
+			BlockPlacedOn = build != null ? build.blockPlacedOn : default,
+			StartedConvo = trader.startedConvo,
+			Character = StructureLiveState.ResolveTraderPrefab(trader),
 			Reputation = trader.reputation,
 			Hostility = trader.hostility,
 			ValueGiven = trader.valueGiven,
+			TotalValueGiven = trader.totalValueGiven,
+			HasItems = trader.items != null,
 			MoveRangeMin = trader.MoveRange.min,
 			MoveRangeMax = trader.MoveRange.max,
 			FarEnoughToMove = trader.farEnoughToMove,
 			DidMove = trader.didMove,
+			HeightMult = trader.heightMult,
+			RotationZ = trader.transform.eulerAngles.z,
+			LocalScale = trader.transform.localScale,
 		};
 
 		if (trader.items != null)
@@ -279,8 +338,15 @@ internal static class WorldScanner
 			for (int j = 0; j < trader.items.Count; j++)
 			{
 				TraderItem item = trader.items[j];
-				if (item != null && !string.IsNullOrEmpty(item.id))
-					record.ItemIds.Add(item.id);
+				if (item == null || string.IsNullOrEmpty(item.id))
+					continue;
+				record.Items.Add(new TraderItemSnap
+				{
+					Id = item.id,
+					Bought = item.bought,
+					Value = item.value,
+					Preference = item.preference,
+				});
 			}
 		}
 
@@ -290,9 +356,10 @@ internal static class WorldScanner
 			record.MoveRangeMin = x - 5f;
 			record.MoveRangeMax = x + 5f;
 			Plugin.Log.LogWarning(
-				$"capture trader{record.Character} MoveRange was 0,0 — stored fallback ±5 at x={x:0.#}");
+				$"capture trader{record.Character} MoveRange was 0,0 - stored fallback ±5 at x={x:0.#}");
 		}
 
+		StructureLiveState.CaptureTraderBody(trader, record);
 		return record;
 	}
 
@@ -333,7 +400,7 @@ internal static class WorldScanner
 		if (corpse == null)
 			return;
 
-		record.AnimalCorpse = corpse.animalCorpse;
+		StructureLiveState.NoteCorpse(corpse, record);
 	}
 
 	private static void CaptureClimbablesWithoutBuilding(WorldGeneration world, HashSet<int> claimedTransforms)
@@ -351,6 +418,7 @@ internal static class WorldScanner
 				continue;
 
 			claimedTransforms.Add(tid);
+			ChunkRoster.Note(climb.gameObject);
 			EntityRecord record = new EntityRecord
 			{
 				Chunk = ChunkAt(world, climb.transform.position),
@@ -359,6 +427,7 @@ internal static class WorldScanner
 				RotationZ = climb.transform.eulerAngles.z,
 			};
 			FillRopeFields(climb, record);
+			StructureLiveState.CaptureEntity(climb.gameObject, null, record);
 			CaptureStore.Entities.Add(record);
 		}
 	}
@@ -410,7 +479,7 @@ internal static class WorldScanner
 			claimedTransforms.Add(tid);
 			SpriteRenderer sr = t.GetComponent<SpriteRenderer>();
 			AudioSource audio = t.GetComponent<AudioSource>();
-			CaptureStore.Entities.Add(new EntityRecord
+			EntityRecord named = new EntityRecord
 			{
 				Chunk = ChunkAt(world, t.position),
 				Id = name,
@@ -420,7 +489,10 @@ internal static class WorldScanner
 				FlipX = sr != null ? sr.flipX : (bool?)null,
 				Pitch = audio != null ? audio.pitch : (float?)null,
 				LengthScale = t.localScale.x,
-			});
+			};
+			ChunkRoster.Note(t.gameObject);
+			StructureLiveState.CaptureEntity(t.gameObject, t.GetComponent<BuildingEntity>(), named);
+			CaptureStore.Entities.Add(named);
 		}
 	}
 
@@ -447,6 +519,7 @@ internal static class WorldScanner
 			if (!claimedTransforms.Add(tid))
 				continue;
 
+			ChunkRoster.Note(light.gameObject);
 			CaptureStore.Lights.Add(FillLight(world, light));
 		}
 	}
@@ -463,7 +536,7 @@ internal static class WorldScanner
 	{
 		if (light == null || light == ambient)
 			return false;
-		if (IsUnder(playerRoot, light.transform))
+		if (PlayerCarry.Holds(light.transform))
 			return false;
 		if (light.GetComponentInParent<BuildingEntity>() != null)
 			return false;
@@ -512,7 +585,7 @@ internal static class WorldScanner
 			Id = CleanName(light.gameObject.name),
 			Position = light.transform.position,
 			RotationZ = light.transform.eulerAngles.z,
-			Intensity = light.intensity,
+			Intensity = QoLLightScale.Authored(light),
 			Color = light.color,
 			OuterRadius = light.pointLightOuterRadius,
 			InnerRadius = light.pointLightInnerRadius,
@@ -524,52 +597,65 @@ internal static class WorldScanner
 
 	private static void CaptureWorldItems(WorldGeneration world, HashSet<int> claimedItems, Transform playerRoot)
 	{
-		Item[] items = Object.FindObjectsOfType<Item>();
-		for (int i = 0; i < items.Length; i++)
+		List<Item> items = new List<Item>();
+		ChunkObjects.CollectSceneItems(items);
+		for (int i = 0; i < items.Count; i++)
 		{
 			Item item = items[i];
 			if (item == null)
 				continue;
+			ChunkRoster.Note(item.gameObject);
 			if (claimedItems.Contains(item.GetInstanceID()))
 				continue;
-			if (IsUnder(playerRoot, item.transform))
+			if (PlayerCarry.Holds(item.transform))
 				continue;
-
-			Item parentItem = item.transform.parent != null
-				? item.transform.parent.GetComponent<Item>()
-				: null;
-			if (parentItem != null)
+			if (ChunkObjects.UnderItem(item.transform))
 				continue;
 
 			claimedItems.Add(item.GetInstanceID());
+			WorldItemRecord linked = NetHold.Linked(item.gameObject);
+			if (linked != null)
+			{
+				linked.Chunk = ChunkAt(world, item.transform.position);
+				linked.Id = PrefabName(item.gameObject, null, item.id);
+				linked.Condition = item.condition;
+				linked.Battery = BatterySnap.Read(item);
+				linked.Position = item.transform.position;
+				linked.RotationZ = item.transform.eulerAngles.z;
+				linked.LocalScale = item.transform.localScale;
+				linked.LiveAtCapture = true;
+				if (!CaptureStore.WorldItems.Contains(linked))
+					CaptureStore.WorldItems.Add(linked);
+				ItemPath.Note("store", linked.Chunk.x, linked.Chunk.y, linked.Id, linked.Position,
+					"capture-keep iid=" + item.GetInstanceID() + " net=" + (linked.HasNetId ? linked.NetId.ToString() : "-"));
+				continue;
+			}
 			WorldItemRecord record = new WorldItemRecord
 			{
 				Chunk = ChunkAt(world, item.transform.position),
 				Id = PrefabName(item.gameObject, null, item.id),
 				Condition = item.condition,
+				Battery = BatterySnap.Read(item),
 				Position = item.transform.position,
 				RotationZ = item.transform.eulerAngles.z,
 				LocalScale = item.transform.localScale,
 			};
-			CopyLiquids(item, record.Liquids);
+			CopyLiquids(item, record);
 			BuildingLoot.AppendChildren(item.transform, record.Children, claimedItems, playerRoot);
 			record.ModState = ModBehaviourState.Capture(item.gameObject);
+			StructureLiveState.CaptureItem(item, record);
+			NetHold.Link(item.gameObject, record);
 			CaptureStore.WorldItems.Add(record);
+			ItemPath.Note("store", record.Chunk.x, record.Chunk.y, record.Id, record.Position,
+				"capture iid=" + item.GetInstanceID() + " sceneId=" + (item.id ?? ""));
 		}
 	}
 
-	private static void CopyLiquids(Item item, List<LiquidRecord> into)
+	private static void CopyLiquids(Item item, WorldItemRecord record)
 	{
-		WaterContainerItem water = item.GetComponent<WaterContainerItem>();
-		if (water == null || water.stack == null)
+		if (record == null)
 			return;
-		for (int i = 0; i < water.stack.Count; i++)
-		{
-			LiquidStack stack = water.stack[i];
-			if (stack == null)
-				continue;
-			into.Add(new LiquidRecord { LiquidId = stack.liquidId, Amount = stack.amount });
-		}
+		record.HasLiquids = BuildingLoot.CopyLiquids(item, record.Liquids);
 	}
 
 	private static int CountSolidBlocks(WorldGeneration world)
@@ -618,15 +704,146 @@ internal static class WorldScanner
 			if (claimedTransforms.Contains(tid))
 				continue;
 			claimedTransforms.Add(tid);
-			CaptureStore.Entities.Add(new EntityRecord
+			ChunkRoster.Note(pipe.gameObject);
+			EntityRecord pipeRec = new EntityRecord
 			{
 				Chunk = ChunkAt(world, pipe.transform.position),
 				Id = "oilpipe",
 				Position = pipe.transform.position,
 				RotationZ = pipe.transform.eulerAngles.z,
 				MagmaPipe = ChunkObjects.IsMagmaPipe(pipe.gameObject),
-			});
+			};
+			StructureLiveState.CaptureEntity(pipe.gameObject, pipe.GetComponent<BuildingEntity>(), pipeRec);
+			CaptureStore.Entities.Add(pipeRec);
 		}
+	}
+
+	/// <summary>
+	/// Custom Structures decorative props (pipeoutside, arrowtip, and a podbutton
+	/// with no use binding) are a sprite plus BackgroundObjectIdentity. no building,
+	/// so the building scan never stores them and chunk unload cannot put them back.
+	/// interactive ones already have a BuildingEntity and take the normal row.
+	/// </summary>
+	private static void CaptureBackgroundShells(WorldGeneration world, HashSet<int> claimedTransforms)
+	{
+		List<GameObject> shells = BackgroundShells();
+		for (int i = 0; i < shells.Count; i++)
+		{
+			GameObject go = shells[i];
+			if (go == null)
+				continue;
+			int tid = go.transform.GetInstanceID();
+			if (!claimedTransforms.Add(tid))
+				continue;
+			EntityRecord rec = ShellRecord(world, go);
+			ChunkRoster.Note(go);
+			StructureLiveState.CaptureEntity(go, null, rec);
+			rec.ModState = ModBehaviourState.Capture(go);
+			CaptureStore.Entities.Add(rec);
+		}
+	}
+
+	internal static void WritebackBackgroundShells(WorldGeneration world, HashSet<long> chunkKeys)
+	{
+		if (world == null || chunkKeys == null)
+			return;
+		List<GameObject> shells = BackgroundShells();
+		for (int i = 0; i < shells.Count; i++)
+		{
+			GameObject go = shells[i];
+			if (go == null || !ChunkObjects.InChunkKeys(world, go.transform.position, chunkKeys))
+				continue;
+			EntityRecord rec = ShellRecord(world, go);
+			ChunkRoster.Note(go);
+			StructureLiveState.CaptureEntity(go, null, rec);
+			rec.ModState = ModBehaviourState.Capture(go);
+			CaptureStore.Entities.Add(rec);
+		}
+	}
+
+	internal static void AddBackgroundShellTargets(WorldGeneration world, HashSet<long> chunkKeys, List<GameObject> kill, HashSet<int> seen)
+	{
+		if (world == null || chunkKeys == null || kill == null)
+			return;
+		List<GameObject> shells = BackgroundShells();
+		for (int i = 0; i < shells.Count; i++)
+		{
+			GameObject go = shells[i];
+			if (go == null || !ChunkObjects.InChunkKeys(world, go.transform.position, chunkKeys))
+				continue;
+			if (seen != null && !seen.Add(go.GetInstanceID()))
+				continue;
+			kill.Add(go);
+		}
+	}
+
+	private static readonly List<GameObject> _shells = new List<GameObject>(16);
+	private static System.Type _shellType;
+	private static bool _shellLooked;
+	private static FieldInfo _shellIdField;
+	private static PropertyInfo _shellIdProp;
+
+	private static List<GameObject> BackgroundShells()
+	{
+		_shells.Clear();
+		if (!_shellLooked)
+		{
+			_shellLooked = true;
+			_shellType = TypeLookup.Find("Custom_Structures.BackgroundObjectIdentity");
+			if (_shellType != null)
+			{
+				_shellIdField = _shellType.GetField("Id", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+				_shellIdProp = _shellType.GetProperty("Id", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+			}
+		}
+		if (_shellType == null)
+			return _shells;
+		UnityEngine.Object[] found = Resources.FindObjectsOfTypeAll(_shellType);
+		for (int i = 0; i < found.Length; i++)
+		{
+			Component part = found[i] as Component;
+			if (part == null)
+				continue;
+			GameObject go = part.gameObject;
+			if (!ChunkRoster.InActiveScene(go))
+				continue;
+			if (go.GetComponent<BuildingEntity>() != null)
+				continue;
+			_shells.Add(go);
+		}
+		return _shells;
+	}
+
+	private static EntityRecord ShellRecord(WorldGeneration world, GameObject go)
+	{
+		string id = ShellId(go);
+		return new EntityRecord
+		{
+			Chunk = ChunkAt(world, go.transform.position),
+			Id = string.IsNullOrEmpty(id) ? CleanName(go.name) : id,
+			Health = 5f,
+			RequireGround = false,
+			Position = go.transform.position,
+			RotationZ = go.transform.eulerAngles.z,
+			LocalScale = go.transform.localScale,
+		};
+	}
+
+	private static string ShellId(GameObject go)
+	{
+		Component part = _shellType != null ? go.GetComponent(_shellType) : null;
+		if (part != null)
+		{
+			if (_shellIdField != null && _shellIdField.GetValue(part) is string field && !string.IsNullOrEmpty(field))
+				return field;
+			if (_shellIdProp != null && _shellIdProp.GetValue(part, null) is string prop && !string.IsNullOrEmpty(prop))
+				return prop;
+		}
+		string name = CleanName(go.name);
+		const string prefix = "bgobj_";
+		if (name.StartsWith(prefix, System.StringComparison.Ordinal))
+			return name.Substring(prefix.Length);
+		return name;
 	}
 
 	private static string CleanName(string name)
@@ -639,10 +856,4 @@ internal static class WorldScanner
 		return name;
 	}
 
-	private static bool IsUnder(Transform root, Transform node)
-	{
-		if (root == null || node == null)
-			return false;
-		return node == root || node.IsChildOf(root);
-	}
 }

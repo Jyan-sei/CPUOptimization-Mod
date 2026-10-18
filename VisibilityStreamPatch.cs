@@ -55,9 +55,7 @@ internal static class VisibilityStreamPatch
 		for (int x = 0; x < w; x++)
 		for (int y = 0; y < h; y++)
 		{
-			TilemapRenderer r = __instance.renderChunks[x, y];
-			if (r != null)
-				r.enabled = false;
+			ChunkTerrain.SetRendererEnabled(__instance, x, y, false);
 		}
 		return false;
 	}

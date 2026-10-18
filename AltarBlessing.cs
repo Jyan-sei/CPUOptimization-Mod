@@ -12,15 +12,9 @@ namespace CPUOptimization2;
 /// </summary>
 internal static class AltarBlessing
 {
-	private static bool _sawUpdate;
 	private static bool _absent;
 	private static Type _type;
 	private static FieldInfo _triggered;
-
-	internal static void NotifyUpdate()
-	{
-		_sawUpdate = true;
-	}
 
 	internal static void Suppress(GameObject go)
 	{
@@ -71,17 +65,17 @@ internal static class AltarBlessing
 			return;
 
 		if (_type == null)
-			_type = AccessTools.TypeByName("DemonAltarBehaviour");
+			_type = TypeLookup.Find("DemonAltarBehaviour");
 		if (_type == null)
 		{
-			if (_sawUpdate)
+			if (TypeLookup.PluginsReady)
 				_absent = true;
 			return;
 		}
 
 		if (_triggered == null)
 			_triggered = AccessTools.Field(_type, "triggered");
-		if (_triggered == null && _sawUpdate)
+		if (_triggered == null && TypeLookup.PluginsReady)
 		{
 			_absent = true;
 			Plugin.Log.LogWarning("DemonAltarBehaviour has no triggered field. stream delete can still bless.");

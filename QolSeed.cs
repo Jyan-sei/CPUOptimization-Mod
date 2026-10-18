@@ -37,7 +37,7 @@ internal static class QolSeed
 		if (_logged || !Active)
 			return;
 		_logged = true;
-		Plugin.Log?.LogInfo("QoL seed is set — ghost placement follows their Random stream.");
+		Plugin.Log?.LogInfo("QoL seed is set - ghost placement follows their Random stream.");
 	}
 
 	private static void Resolve()

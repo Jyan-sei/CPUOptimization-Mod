@@ -41,7 +41,7 @@ internal static class PotatoUi
 			return;
 		// no hud/canvas/moodle/text patches in here yet
 		IsApplied = true;
-		Plugin.Log.LogInfo("PotatoUi Apply — flag on (no HUD patches in this build)");
+		Plugin.Log.LogInfo("PotatoUi Apply - flag on (no HUD patches in this build)");
 	}
 
 	internal static void Restore()
@@ -49,7 +49,7 @@ internal static class PotatoUi
 		if (!IsApplied)
 			return;
 		IsApplied = false;
-		Plugin.Log.LogInfo("PotatoUi Restore — stock UI");
+		Plugin.Log.LogInfo("PotatoUi Restore - stock UI");
 	}
 
 	internal static void Reset()

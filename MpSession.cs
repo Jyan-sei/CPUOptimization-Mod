@@ -8,8 +8,8 @@ using UnityEngine;
 namespace CPUOptimization2;
 
 /// <summary>
-/// soft ref to krokmp, no compile time dependancy.
-/// host owns stream unload/load. clients can capture/ScreenCull but must not destroy networked GOs.
+/// soft ref to together, then old krokmp. no compile time dependancy.
+/// clients stream their own window. NetHold keeps a Together replica and destroys a local gen object.
 /// </summary>
 internal static class MpSession
 {
@@ -52,8 +52,8 @@ internal static class MpSession
 		}
 	}
 
-	/// <summary>stream load/unload only in sp, or on the krok host</summary>
-	internal static bool AllowStream => !Running || IsServer;
+	/// <summary>sp, host, and client. a client streams the local window only.</summary>
+	internal static bool AllowStream => true;
 
 	/// <summary>
 	/// living player anchors for the union windows. camerapos, then body, then pos.
@@ -93,7 +93,7 @@ internal static class MpSession
 	}
 
 	/// <summary>
-	/// dead player bodies only. local body, plus Krok's AllDeadPlayers.
+	/// dead player bodies only. local body, plus the mp dead list.
 	/// no scene search. a respawn or disconnect drops them off this list.
 	/// </summary>
 	internal static void CollectDeadPlayerBodies(List<Body> dest)
@@ -141,6 +141,7 @@ internal static class MpSession
 	{
 		anchor = Vector3.zero;
 
+		// together names this CameraViewPos. old krok used camerapos.
 		if (_cameraPosProp != null)
 		{
 			try
@@ -208,19 +209,34 @@ internal static class MpSession
 	{
 		if (_resolved)
 			return;
+
+		// together 5: Net.IsRunning / Net.IsServer, players on ScavPlayer.
+		// IsServer is true for host and dedicated, false for a client.
+		_netType = TypeLookup.Find("Together.Net") ?? TypeLookup.Find("KrokoshaCasualtiesMP.Net");
+		_netPlayerType = TypeLookup.Find("Together.ScavPlayer") ?? TypeLookup.Find("KrokoshaCasualtiesMP.NetPlayer");
+		if (_netType == null && _netPlayerType == null && !TypeLookup.PluginsReady)
+			return;
 		_resolved = true;
 
-		_netType = AccessTools.TypeByName("KrokoshaCasualtiesMP.Net");
-		_netPlayerType = AccessTools.TypeByName("KrokoshaCasualtiesMP.NetPlayer");
 		if (_netType != null)
 		{
-			// properties first. AccessTools.Field warns on missing names and Net uses props
-			_runningProp = AccessTools.Property(_netType, "running");
-			_isServerProp = AccessTools.Property(_netType, "is_server");
-			if (_runningProp == null)
-				_runningField = _netType.GetField("running", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
-			if (_isServerProp == null)
-				_isServerField = _netType.GetField("is_server", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+			bool together = _netType.FullName != null
+				&& _netType.FullName.StartsWith("Together.", StringComparison.Ordinal);
+			if (together)
+			{
+				_runningProp = AccessTools.Property(_netType, "IsRunning");
+				_isServerProp = AccessTools.Property(_netType, "IsServer");
+			}
+			else
+			{
+				// properties first. AccessTools.Field warns on missing names and Net uses props
+				_runningProp = AccessTools.Property(_netType, "running");
+				_isServerProp = AccessTools.Property(_netType, "is_server");
+				if (_runningProp == null)
+					_runningField = _netType.GetField("running", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+				if (_isServerProp == null)
+					_isServerField = _netType.GetField("is_server", BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static);
+			}
 		}
 
 		if (_netPlayerType == null)
@@ -232,7 +248,8 @@ internal static class MpSession
 		_allDeadPlayersField = _netPlayerType.GetField("AllDeadPlayers", stat);
 		_posProp = _netPlayerType.GetProperty("pos", inst);
 		_cameraPosProp = _netPlayerType.GetProperty("camerapos", inst)
-			?? _netPlayerType.GetProperty("cameraPos", inst);
+			?? _netPlayerType.GetProperty("cameraPos", inst)
+			?? _netPlayerType.GetProperty("CameraViewPos", inst);
 		_bodyField = _netPlayerType.GetField("body", inst);
 	}
 }

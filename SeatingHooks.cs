@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.Events;
 
@@ -9,6 +10,7 @@ namespace CPUOptimization2;
 /// </summary>
 internal static class SeatingHooks
 {
+	private static readonly List<GameObject> _roster = new List<GameObject>(64);
 	internal static void Bind(BuildingEntity build)
 	{
 		if (build == null)
@@ -42,10 +44,10 @@ internal static class SeatingHooks
 	{
 		if (world == null)
 			return;
-		BuildingEntity[] all = Object.FindObjectsOfType<BuildingEntity>();
-		for (int i = 0; i < all.Length; i++)
+		ChunkRoster.CopyAll(_roster);
+		for (int i = 0; i < _roster.Count; i++)
 		{
-			BuildingEntity build = all[i];
+			BuildingEntity build = _roster[i] != null ? _roster[i].GetComponent<BuildingEntity>() : null;
 			if (build == null)
 				continue;
 			Vector2Int bp = build.blockPlacedOn;

@@ -5,9 +5,9 @@ namespace CPUOptimization2;
 
 /// <summary>
 /// a dead player's ragdoll has to keep the ground under it.
-/// the spectator cam and other players are what the stream window follows, so the
-/// corpse chunk unloads and the body falls through. hold those colliders until
-/// the body is alive again, destroyed, or the player drops off Krok's dead list.
+/// the local window follows the corpse, and the camera once you look away.
+/// other corpses are not in that window, so their colliders stay pinned until
+/// the body is alive again, destroyed, or the player drops off the dead list.
 /// </summary>
 internal static class PlayerCorpseGround
 {

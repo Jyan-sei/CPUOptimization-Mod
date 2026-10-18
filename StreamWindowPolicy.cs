@@ -100,7 +100,7 @@ internal static class StreamWindowPolicy
 		}
 
 		Plugin.Log.LogInfo(
-			$"stream window mode ({reason}) — {ModeLabels[(int)Current]} → {FormatSpans()} " +
+			$"stream window mode ({reason}) - {ModeLabels[(int)Current]} → {FormatSpans()} " +
 			$"objectOps/frame={ObjectOpsPerFrame}");
 
 		StreamController.NotifyPolicyChanged(WorldGeneration.world);
@@ -114,7 +114,7 @@ internal static class StreamWindowPolicy
 			ApplyFixedSpansForMode(mode);
 			Locked = true;
 			Plugin.Log.LogInfo(
-				$"stream window policy ({reason}) — fixed {FormatSpans()} ({ModeLabels[(int)mode]}) " +
+				$"stream window policy ({reason}) - fixed {FormatSpans()} ({ModeLabels[(int)mode]}) " +
 				$"objectOps/frame={ObjectOpsPerFrame}");
 			return true;
 		}
@@ -126,7 +126,7 @@ internal static class StreamWindowPolicy
 			SpanX = 2;
 			SpanY = 2;
 			Plugin.Log.LogInfo(
-				$"stream window policy ({reason}) — dynamic fallback 2x2 (no ortho yet); " +
+				$"stream window policy ({reason}) - dynamic fallback 2x2 (no ortho yet); " +
 				$"objectOps/frame={ObjectOpsPerFrame}");
 			return false;
 		}
@@ -138,7 +138,7 @@ internal static class StreamWindowPolicy
 		MeasuredAspect = aspect;
 		Locked = true;
 		Plugin.Log.LogInfo(
-			$"stream window policy locked ({reason}) — {SpanX}x{SpanY} chunks " +
+			$"stream window policy locked ({reason}) - {SpanX}x{SpanY} chunks " +
 			$"(view half={halfW:F1}x{halfH:F1} aspect={aspect:F2} chunk={WorldGeneration.CHUNKSIZE}) " +
 			$"objectOps/frame={ObjectOpsPerFrame}");
 		return true;

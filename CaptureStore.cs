@@ -39,6 +39,8 @@ internal static class CaptureStore
 		ElderResident.Clear();
 		ModBehaviourState.ClearRuntime();
 		StreamObjectJobs.Clear();
+		NetHold.Reset();
+		ChunkRoster.Clear();
 		BiomeDepth = 0;
 		ChunkWidth = 0;
 		ChunkHeight = 0;

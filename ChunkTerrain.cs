@@ -8,6 +8,82 @@ namespace CPUOptimization2;
 
 internal static class ChunkTerrain
 {
+	private static bool _drawPrepped;
+
+	internal static void ResetDrawPrep()
+	{
+		_drawPrepped = false;
+	}
+
+	/// <summary>
+	/// one pass after the tilemaps exist. stock assigns renderer.material, which
+	/// clones a material per chunk, so every chunk pays its own SetPass.
+	/// </summary>
+	internal static void PrepareDraw(WorldGeneration world)
+	{
+		if (_drawPrepped || world == null || world.renderChunks == null || world.defaultMat == null)
+			return;
+
+		int width = world.renderChunks.GetLength(0);
+		int height = world.renderChunks.GetLength(1);
+		bool any = false;
+		for (int x = 0; x < width; x++)
+		for (int y = 0; y < height; y++)
+		{
+			TilemapRenderer renderer = world.renderChunks[x, y];
+			if (renderer == null)
+				continue;
+			any = true;
+			ShareMaterial(renderer, world.defaultMat);
+			SetBackdropEnabled(renderer, renderer.enabled);
+		}
+		if (any)
+			_drawPrepped = true;
+	}
+
+	/// <summary>show or hide the chunk tilemap. the tilemap and its colliders stay.</summary>
+	internal static void SetRendererEnabled(WorldGeneration world, int cx, int cy, bool on)
+	{
+		if (world == null || world.renderChunks == null)
+			return;
+		if (cx < 0 || cy < 0 || cx >= world.renderChunks.GetLength(0) || cy >= world.renderChunks.GetLength(1))
+			return;
+		TilemapRenderer renderer = world.renderChunks[cx, cy];
+		if (renderer == null)
+			return;
+		if (on)
+			InstantLoad.EnsurePainted(world, cx, cy);
+		if (world.defaultMat != null)
+			ShareMaterial(renderer, world.defaultMat);
+		if (renderer.enabled != on)
+			renderer.enabled = on;
+		// ChunkBack is a second renderer. hiding the tilemap left it in the cull.
+		SetBackdropEnabled(renderer, on);
+	}
+
+	private static void ShareMaterial(TilemapRenderer renderer, Material shared)
+	{
+		if (renderer.sharedMaterial != shared)
+			renderer.sharedMaterial = shared;
+	}
+
+	private static void SetBackdropEnabled(TilemapRenderer renderer, bool on)
+	{
+		Transform root = renderer.transform;
+		int count = root.childCount;
+		for (int i = 0; i < count; i++)
+		{
+			Transform child = root.GetChild(i);
+			if (child == null || !string.Equals(child.name, "ChunkBack", System.StringComparison.Ordinal))
+				continue;
+			if (WallholeResident.OwnsTransform(child))
+				continue;
+			SpriteRenderer sprite = child.GetComponent<SpriteRenderer>();
+			if (sprite != null && sprite.enabled != on)
+				sprite.enabled = on;
+		}
+	}
+
 	/// <summary>make the chunk go, paint tiles, enable the renderer. colliders stay off untill EnableColliders</summary>
 	internal static void CreateRenderer(WorldGeneration world, int cx, int cy)
 	{
@@ -34,9 +110,11 @@ internal static class ChunkTerrain
 
 		gameObject.AddComponent<CompositeCollider2D>().enabled = false;
 
+		// zero manual bounds cull the tilemap down to its pivot, so a neighbor
+		// chunk stays invisible until the camera reaches that chunk's center.
 		renderer.detectChunkCullingBounds = TilemapRenderer.DetectChunkCullingBounds.Manual;
-		renderer.chunkCullingBounds = Vector3.zero;
-		renderer.material = world.defaultMat;
+		renderer.chunkCullingBounds = new Vector3(WorldGeneration.CHUNKSIZE, WorldGeneration.CHUNKSIZE, 8f);
+		renderer.sharedMaterial = world.defaultMat;
 		renderer.sortingOrder = 1000;
 		renderer.enabled = true;
 
@@ -62,6 +140,8 @@ internal static class ChunkTerrain
 
 		CreateBackgroundFor(world, map);
 		world.UpdateChunk(new Vector2Int(cx, cy));
+		InstantLoad.NotePainted(cx, cy);
+		ApplyChunkDrawBounds(gameObject);
 		ApplyCachedTileFlips(world, script, map, cx, cy);
 		// UpdateChunk just invoked the fresh event. traps that survived in a neighbor chunk
 		// (or were already spawned) need their seating listener on this one.
@@ -74,14 +154,26 @@ internal static class ChunkTerrain
 		}
 	}
 
-	internal static void EnableColliders(WorldGeneration world, int cx, int cy)
+	internal static bool CollidersEnabled(WorldGeneration world, int cx, int cy)
 	{
 		if (!WorldArrays.IsLoaded(world, cx, cy))
-			return;
+			return false;
+		Tilemap map = WorldArrays.Chunks(world)[cx, cy];
+		if (map == null)
+			return false;
+		TilemapCollider2D collider = map.GetComponent<TilemapCollider2D>();
+		return collider != null && collider.enabled;
+	}
+
+	/// <summary>true when a collider or body was switched on. already-on is false.</summary>
+	internal static bool EnableColliders(WorldGeneration world, int cx, int cy)
+	{
+		if (!WorldArrays.IsLoaded(world, cx, cy))
+			return false;
 
 		Tilemap map = WorldArrays.Chunks(world)[cx, cy];
 		if (map == null)
-			return;
+			return false;
 
 		TilemapCollider2D collider = map.GetComponent<TilemapCollider2D>();
 		Rigidbody2D rb = map.GetComponent<Rigidbody2D>();
@@ -112,22 +204,27 @@ internal static class ChunkTerrain
 			composite.enabled = false;
 			changed = true;
 		}
+		ChunkSeams.Note(cx, cy, collider != null && collider.enabled);
 		if (!changed)
-			return;
+			return false;
 
 		Physics2D.SyncTransforms();
 		if (Plugin.VerboseLogging != null && Plugin.VerboseLogging.Value)
 			Plugin.Log.LogInfo($"stream load collider chunk ({cx},{cy})");
+		return true;
 	}
 
-	internal static void DisableColliders(WorldGeneration world, int cx, int cy)
+	/// <summary>true when a collider or body was switched off.</summary>
+	internal static bool DisableColliders(WorldGeneration world, int cx, int cy)
 	{
 		if (!WorldArrays.IsLoaded(world, cx, cy))
-			return;
+			return false;
 		Tilemap map = WorldArrays.Chunks(world)[cx, cy];
 		if (map == null)
-			return;
-		DisablePhysics(map.gameObject);
+			return false;
+		bool changed = DisablePhysics(map.gameObject);
+		ChunkSeams.Note(cx, cy, false);
+		return changed;
 	}
 
 	internal static void DestroyRenderer(WorldGeneration world, int cx, int cy)
@@ -156,6 +253,7 @@ internal static class ChunkTerrain
 		if (world.ChunkUpdated != null)
 			world.ChunkUpdated[cx, cy] = new UnityEvent();
 
+		ChunkSeams.Note(cx, cy, false);
 		if (Plugin.VerboseLogging != null && Plugin.VerboseLogging.Value)
 			Plugin.Log.LogInfo($"stream destroy renderer chunk ({cx},{cy})");
 	}
@@ -178,32 +276,50 @@ internal static class ChunkTerrain
 		return solid;
 	}
 
-	private static void DisablePhysics(GameObject go)
+	private static bool DisablePhysics(GameObject go)
 	{
+		bool changed = false;
 		TilemapCollider2D tile = go.GetComponent<TilemapCollider2D>();
 		if (tile != null && tile.enabled)
+		{
 			tile.enabled = false;
+			changed = true;
+		}
 		CompositeCollider2D composite = go.GetComponent<CompositeCollider2D>();
 		if (composite != null && composite.enabled)
+		{
 			composite.enabled = false;
+			changed = true;
+		}
 		Rigidbody2D rb = go.GetComponent<Rigidbody2D>();
 		if (rb != null && rb.simulated)
+		{
 			rb.simulated = false;
+			changed = true;
+		}
+		return changed;
 	}
 
-	/// <summary>
-	/// renderer on, colliders on. elder sim reads the renderer, chew hits the collider,
-	/// DamageBlock wants the tilemap for the break sprite.
-	/// </summary>
+	/// <summary>elder sim reads the renderer. colliders are already on.</summary>
 	internal static void EnsureSim(WorldGeneration world, int cx, int cy)
 	{
-		if (world == null)
+		SetRendererEnabled(world, cx, cy, true);
+	}
+
+	private static void ApplyChunkDrawBounds(GameObject chunk)
+	{
+		if (chunk == null)
 			return;
-		if (!WorldArrays.IsLoaded(world, cx, cy))
-			CreateRenderer(world, cx, cy);
-		EnableColliders(world, cx, cy);
-		if (world.renderChunks != null && world.renderChunks[cx, cy] != null)
-			world.renderChunks[cx, cy].enabled = true;
+		Vector3 bounds = new Vector3(WorldGeneration.CHUNKSIZE, WorldGeneration.CHUNKSIZE, 8f);
+		TilemapRenderer[] renderers = chunk.GetComponentsInChildren<TilemapRenderer>(true);
+		for (int i = 0; i < renderers.Length; i++)
+		{
+			TilemapRenderer renderer = renderers[i];
+			if (renderer == null)
+				continue;
+			renderer.detectChunkCullingBounds = TilemapRenderer.DetectChunkCullingBounds.Manual;
+			renderer.chunkCullingBounds = bounds;
+		}
 	}
 
 	private static void CreateBackgroundFor(WorldGeneration world, Tilemap map)

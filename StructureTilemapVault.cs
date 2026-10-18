@@ -8,7 +8,7 @@ namespace CPUOptimization2;
 /// inactive clones of structure tilemaps (backgrounds etc) under worldGrid.
 /// not chunk tilemaps, and alot of them have no Resources.Load id.
 /// StructureCatalog covers named prefab kids. this covers the rest, one template per
-/// fingerprint, shared across chunks so writeback/destroy can free the live copies.
+/// fingerprint. live copies stay until the layer changes.
 /// </summary>
 internal static class StructureTilemapVault
 {
@@ -72,66 +72,66 @@ internal static class StructureTilemapVault
 	}
 
 	/// <summary>
-	/// pod interiors are big tilemaps. the transform sits on one chunk, the tiles spill into the next.
-	/// keep it while any of those chunks are still in the window.
+	/// structure tilemaps never got a manual culling box. auto bounds stay tiny,
+	/// so the interior drops once the camera leaves the transform, starting pod included.
+	/// chunk unload does not destroy these. the bounds have to keep drawing.
 	/// </summary>
-	internal static bool CoversDesiredChunk(WorldGeneration world, Tilemap tm)
+	internal static void WakeRenderer(GameObject go)
 	{
-		return CoversAny(world, tm, (x, y) => StreamController.IsChunkDesired(x, y));
-	}
-
-	/// <summary>true if any in-bounds chunk under the tilemap matches</summary>
-	internal static bool CoversAny(WorldGeneration world, Tilemap tm, System.Func<int, int, bool> match)
-	{
-		if (world == null || tm == null || match == null)
-			return false;
-
-		BoundsInt cells = tm.cellBounds;
-		Vector3 a = tm.transform.TransformPoint(new Vector3(cells.xMin, cells.yMin, 0f));
-		Vector3 b = tm.transform.TransformPoint(new Vector3(cells.xMax, cells.yMin, 0f));
-		Vector3 c = tm.transform.TransformPoint(new Vector3(cells.xMin, cells.yMax, 0f));
-		Vector3 d = tm.transform.TransformPoint(new Vector3(cells.xMax, cells.yMax, 0f));
-
-		float minX = Mathf.Min(Mathf.Min(a.x, b.x), Mathf.Min(c.x, d.x));
-		float maxX = Mathf.Max(Mathf.Max(a.x, b.x), Mathf.Max(c.x, d.x));
-		float minY = Mathf.Min(Mathf.Min(a.y, b.y), Mathf.Min(c.y, d.y));
-		float maxY = Mathf.Max(Mathf.Max(a.y, b.y), Mathf.Max(c.y, d.y));
-		if (!TryGetCoveredChunkRect(world, minX, minY, maxX, maxY, out int x0, out int y0, out int x1, out int y1))
-			return false;
-
-		for (int x = x0; x <= x1; x++)
-		for (int y = y0; y <= y1; y++)
+		if (go == null)
+			return;
+		Tilemap tm = go.GetComponent<Tilemap>();
+		if (tm != null)
 		{
-			if (match(x, y))
-				return true;
+			tm.CompressBounds();
+			tm.RefreshAllTiles();
 		}
-		return false;
+		TilemapRenderer renderer = go.GetComponent<TilemapRenderer>();
+		if (renderer == null)
+			return;
+		renderer.detectChunkCullingBounds = TilemapRenderer.DetectChunkCullingBounds.Manual;
+		renderer.chunkCullingBounds = CullingBounds(go);
+		renderer.enabled = false;
+		renderer.enabled = true;
 	}
 
-	private static bool TryGetCoveredChunkRect(
-		WorldGeneration world, float minX, float minY, float maxX, float maxY,
-		out int x0, out int y0, out int x1, out int y1)
+	/// <summary>
+	/// pod interiors sit on their own transform, so 256 covers them.
+	/// StructureBackgroundTilemap is parented at the map corner and paints in cell space.
+	/// a 256 box around that corner never reaches a structure, and those tiles never draw.
+	/// </summary>
+	private static Vector3 CullingBounds(GameObject go)
 	{
-		x0 = y0 = x1 = y1 = 0;
-		int width = (int)world.chunkWidth;
-		int height = (int)world.chunkHeight;
-		if (width <= 0 || height <= 0)
-			return false;
+		if (!IsPinnedCornerTilemap(go.transform))
+			return new Vector3(256f, 256f, 8f);
+		WorldGeneration world = WorldGeneration.world;
+		float span = 8192f;
+		if (world != null)
+		{
+			float w = world.halfWidth * 2f;
+			float h = world.halfHeight * 2f;
+			if (w > span)
+				span = w;
+			if (h > span)
+				span = h;
+		}
+		return new Vector3(span + 64f, span + 64f, 8f);
+	}
 
-		Vector2Int c0 = world.BlockToChunkPos(world.WorldToBlockPos(new Vector2(minX, minY)));
-		Vector2Int c1 = world.BlockToChunkPos(world.WorldToBlockPos(new Vector2(maxX, maxY)));
-		int rawX0 = Mathf.Min(c0.x, c1.x);
-		int rawX1 = Mathf.Max(c0.x, c1.x);
-		int rawY0 = Mathf.Min(c0.y, c1.y);
-		int rawY1 = Mathf.Max(c0.y, c1.y);
-		if (rawX1 < 0 || rawY1 < 0 || rawX0 >= width || rawY0 >= height)
-			return false;
-
-		x0 = Mathf.Clamp(rawX0, 0, width - 1);
-		x1 = Mathf.Clamp(rawX1, 0, width - 1);
-		y0 = Mathf.Clamp(rawY0, 0, height - 1);
-		y1 = Mathf.Clamp(rawY1, 0, height - 1);
-		return true;
+	internal static void WakeAll(WorldGeneration world)
+	{
+		if (world == null)
+			return;
+		// not only worldGrid kids. a pod interior can sit under the pod root, and tutorial
+		// skips capture so the grid walk never ran.
+		Tilemap[] maps = Object.FindObjectsOfType<Tilemap>();
+		for (int i = 0; i < maps.Length; i++)
+		{
+			Tilemap tm = maps[i];
+			if (tm == null || tm.GetComponent<ChunkScript>() != null)
+				continue;
+			WakeRenderer(tm.gameObject);
+		}
 	}
 
 	internal static bool IsStructureTilemap(Transform child, WorldGeneration world)
@@ -147,8 +147,7 @@ internal static class StructureTilemapVault
 
 	/// <summary>
 	/// Custom Structures parks the transform at the world corner and SetTiles in cell space.
-	/// transform.position is always chunk 0,0, so a stream kill there deletes every interior
-	/// and the record only comes back when that corner chunk loads.
+	/// transform.position is always chunk 0,0. leave it where the mod put it.
 	/// </summary>
 	internal static bool IsPinnedCornerTilemap(Transform child)
 	{

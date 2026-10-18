@@ -54,6 +54,8 @@ internal static class ModBehaviourState
 		internal Color Color;
 		internal Vector3 LocalScale;
 		internal bool Child;
+		internal int SortingOrder;
+		internal string SortingLayer;
 	}
 
 	private const BindingFlags Members = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
@@ -66,6 +68,7 @@ internal static class ModBehaviourState
 
 	private static Harmony _harmony;
 	private static bool _scannedAfterUpdate;
+	private static int _scanFailLog;
 	private static bool _registryLooked;
 	private static FieldInfo _itemRegistry;
 	private static PropertyInfo _buildingView;
@@ -98,6 +101,18 @@ internal static class ModBehaviourState
 		// scan, and Start may already have run on this layer. stale ids are dead objects.
 		SkipStart.Clear();
 		Pending.Clear();
+	}
+
+	internal static bool HasForeign(ModState state)
+	{
+		if (state == null)
+			return false;
+		for (int i = 0; i < state.Behaviours.Count; i++)
+		{
+			if (state.Behaviours[i] != null && state.Behaviours[i].Foreign)
+				return true;
+		}
+		return false;
 	}
 
 	internal static ModState Capture(GameObject go)
@@ -177,6 +192,8 @@ internal static class ModBehaviourState
 				Color = sr.color,
 				LocalScale = sr.transform.localScale,
 				Child = child,
+				SortingOrder = sr.sortingOrder,
+				SortingLayer = sr.sortingLayerName,
 			});
 		}
 
@@ -217,13 +234,34 @@ internal static class ModBehaviourState
 		{
 			BehaviourSnap snap = state.Behaviours[i];
 			Type type = Type.GetType(snap.TypeName, throwOnError: false);
-			if (type == null)
+			if (type == null || !typeof(Component).IsAssignableFrom(type))
 				continue;
 			Component component = go.GetComponent(type);
+			bool added = false;
+			if (component == null)
+			{
+				// custom structures adds these at gen (signal node, tooltip, button sprite hook).
+				// the stock prefab does not have them, so a field write used to no-op.
+				// UsableObject is a game type, but background buttons only exist because the mod added one.
+				if (!snap.Foreign && type.Name != "UsableObject")
+					continue;
+				try
+				{
+					component = go.AddComponent(type);
+					added = component != null;
+				}
+				catch (Exception ex)
+				{
+					Plugin.Log.LogWarning($"mod state add {type.Name} failed: {ex.Message}");
+					continue;
+				}
+			}
 			if (component == null)
 				continue;
 			WriteFields(component, snap.Fields);
-			if (snap.Foreign)
+			if (added)
+				FinishAdded(go, component);
+			else if (snap.Foreign)
 			{
 				ReplaySetters(component);
 				if (snap.Started)
@@ -250,6 +288,9 @@ internal static class ModBehaviourState
 			if (snap.Sprite != null)
 				sr.sprite = snap.Sprite;
 			sr.color = snap.Color;
+			sr.sortingOrder = snap.SortingOrder;
+			if (!string.IsNullOrEmpty(snap.SortingLayer))
+				sr.sortingLayerName = snap.SortingLayer;
 			if (snap.Child)
 				target.localScale = snap.LocalScale;
 		}
@@ -300,31 +341,32 @@ internal static class ModBehaviourState
 		Assembly[] asms = AppDomain.CurrentDomain.GetAssemblies();
 		for (int i = 0; i < asms.Length; i++)
 		{
-			Type[] types;
-			try
-			{
-				types = asms[i].GetTypes();
-			}
-			catch (ReflectionTypeLoadException ex)
-			{
-				types = ex.Types;
-			}
-			catch
-			{
-				continue;
-			}
-			if (types == null)
-				continue;
+			Type[] types = TypeLookup.TypesOf(asms[i]);
 			for (int t = 0; t < types.Length; t++)
 			{
 				Type type = types[t];
-				if (type == null || !type.IsClass || type.IsAbstract)
-					continue;
-				if (!typeof(MonoBehaviour).IsAssignableFrom(type))
-					continue;
-				if (!IsForeign(type))
-					continue;
-				EnsureStartPatch(type);
+				try
+				{
+					// prosthetics (and similar) still load when KrokMP is absent.
+					// touching those types throws TypeLoadException and used to abort Awake
+					// before the bootstrap time-scale lock and the chunk-update guard.
+					if (type == null || !type.IsClass || type.IsAbstract)
+						continue;
+					if (!typeof(MonoBehaviour).IsAssignableFrom(type))
+						continue;
+					if (!IsForeign(type))
+						continue;
+					EnsureStartPatch(type);
+				}
+				catch (Exception ex)
+				{
+					if (_scanFailLog >= 3)
+						continue;
+					_scanFailLog++;
+					Plugin.Log.LogWarning(
+						"mod scan skip " + (type != null ? type.FullName : "?")
+						+ ": " + ex.GetType().Name);
+				}
 			}
 		}
 	}
@@ -388,11 +430,13 @@ internal static class ModBehaviourState
 	{
 		if (_registryLooked)
 			return;
+		Type items = TypeLookup.Find("CUCoreLib.Registries.ItemRegistry");
+		Type buildings = TypeLookup.Find("CUCoreLib.Registries.BuildingEntityRegistry");
+		if (items == null && buildings == null && !TypeLookup.PluginsReady)
+			return;
 		_registryLooked = true;
-		Type items = AccessTools.TypeByName("CUCoreLib.Registries.ItemRegistry");
 		if (items != null)
 			_itemRegistry = AccessTools.Field(items, "RegisteredItems");
-		Type buildings = AccessTools.TypeByName("CUCoreLib.Registries.BuildingEntityRegistry");
 		if (buildings != null)
 			_buildingView = AccessTools.Property(buildings, "RegisteredDefinitionsView");
 	}
@@ -422,6 +466,90 @@ internal static class ModBehaviourState
 	{
 		FieldInfo field = owner.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
 		return field?.GetValue(owner) as IList;
+	}
+
+	/// <summary>
+	/// AddComponent already ran Awake/OnEnable with empty fields.
+	/// write the captured values, then let the mod bind again.
+	/// </summary>
+	private static void FinishAdded(GameObject go, Component component)
+	{
+		Type type = component.GetType();
+		try
+		{
+			FieldInfo registered = type.GetField("listenersRegistered", Members);
+			if (registered != null && registered.FieldType == typeof(bool))
+				registered.SetValue(component, false);
+			MethodInfo listen = type.GetMethod("RegisterListenersIfNeeded", Members);
+			if (listen != null)
+				listen.Invoke(component, null);
+
+			FieldInfo applied = type.GetField("applied", Members);
+			if (applied != null && applied.FieldType == typeof(bool)
+				&& type.Name == "BackgroundBuildingNameOverride")
+				applied.SetValue(component, false);
+
+			MethodInfo applyNow = type.GetMethod("ApplyNow", Members);
+			if (applyNow != null && applyNow.GetParameters().Length == 0)
+				applyNow.Invoke(component, null);
+		}
+		catch (Exception ex)
+		{
+			Plugin.Log.LogWarning($"mod state finish {type.Name} failed: {ex.Message}");
+		}
+
+		if (type.Name != "BackgroundInteractionBinding")
+			return;
+		BuildingEntity build = go.GetComponent<BuildingEntity>();
+		if (build == null)
+			return;
+		string objectId = FieldString(component, "ObjectId");
+		string tip = FieldString(component, "TooltipName");
+		string desc = FieldString(component, "TooltipDesc");
+		if (!string.IsNullOrEmpty(tip))
+			build.fullName = tip;
+		if (desc != null)
+			build.description = desc;
+		build.skipDescriptionSet = true;
+		if (string.Equals(objectId, "podbutton", StringComparison.OrdinalIgnoreCase))
+			build.cantHit = true;
+		int descriptor = LayerMask.NameToLayer("Descriptor");
+		if (descriptor >= 0)
+			go.layer = descriptor;
+		// BuildingEntity.Start replaces fullName with the locale line for lifepodbuttonheat.
+		ButtonLabelHold hold = go.GetComponent<ButtonLabelHold>();
+		if (hold == null)
+			hold = go.AddComponent<ButtonLabelHold>();
+		hold.Name = tip;
+		hold.Desc = desc;
+	}
+
+	internal sealed class ButtonLabelHold : MonoBehaviour
+	{
+		internal string Name;
+		internal string Desc;
+		private int _frames;
+
+		private void LateUpdate()
+		{
+			BuildingEntity build = GetComponent<BuildingEntity>();
+			if (build != null)
+			{
+				if (!string.IsNullOrEmpty(Name))
+					build.fullName = Name;
+				if (Desc != null)
+					build.description = Desc;
+				build.skipDescriptionSet = true;
+			}
+			if (++_frames >= 3)
+				Destroy(this);
+		}
+	}
+
+	private static string FieldString(Component component, string name)
+	{
+		FieldInfo field = component.GetType().GetField(name, Members);
+		return field != null ? field.GetValue(component) as string : null;
 	}
 
 	private static void WriteFields(Component component, List<FieldSnap> fields)

@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.Tilemaps;
@@ -26,9 +27,22 @@ internal static class GenGhostPlace
 				priority = QolSeed.AfterOtherPrefixes
 			});
 
+		// Last so Together's prefix can rename "background" to KMPSR_ before we place.
 		harmony.Patch(
 			AccessTools.Method(typeof(WorldGeneration), "GenerateEntityAtPos"),
-			prefix: new HarmonyMethod(typeof(GenGhostPlace), nameof(GenerateEntityAtPosPrefix)));
+			prefix: new HarmonyMethod(typeof(GenGhostPlace), nameof(GenerateEntityAtPosPrefix))
+			{
+				priority = Priority.Last
+			});
+
+		System.Type syncInfo = TypeLookup.Find("Together.SyncInfo");
+		MethodInfo syncSpawn = syncInfo != null
+			? AccessTools.Method(syncInfo, "InstantiateResource")
+			: null;
+		if (syncSpawn != null)
+		{
+			harmony.Patch(syncSpawn, postfix: new HarmonyMethod(typeof(GenGhostPlace), nameof(AfterSyncInstantiate)));
+		}
 
 		harmony.Patch(
 			AccessTools.Method(typeof(WorldGeneration), "DistributeMiniBarrels"),
@@ -81,8 +95,8 @@ internal static class GenGhostPlace
 		if (_ghosted != 0 || _placedLive != 0)
 		{
 			Plugin.Log.LogInfo(
-				$"gen ghost-place — skipped Instantiates outside {StreamWindowPolicy.FormatSpans()}: ghosted={_ghosted} livePlaced={_placedLive} " +
-				$"keep={_keepX0},{_keepY0}..{_keepX1},{_keepY1}");
+				$"gen ghost-place - skipped Instantiates outside {StreamWindowPolicy.FormatSpans()}: ghosted={_ghosted} livePlaced={_placedLive} " +
+				$"ghostItems={CaptureStore.GhostItemCount} keep={_keepX0},{_keepY0}..{_keepX1},{_keepY1}");
 		}
 		StructureBgLog.DumpGen();
 	}
@@ -98,6 +112,9 @@ internal static class GenGhostPlace
 		if (Plugin.StreamEnabled == null || !Plugin.StreamEnabled.Value)
 			return;
 		if (__instance == null || !__instance.generatingWorld)
+			return;
+
+		if (InstantLoad.Active)
 			return;
 
 		ArmFromPlayer(__instance);
@@ -150,7 +167,8 @@ internal static class GenGhostPlace
 
 		QolSeed.NoteIfActive();
 		ArmFromPlayer(__instance);
-		EnsureColliders(__instance);
+		if (!InstantLoad.Active)
+			EnsureColliders(__instance);
 
 		if (dir == Vector2.zero)
 			dir = Vector2.down;
@@ -168,27 +186,38 @@ internal static class GenGhostPlace
 				UnityEngine.Random.Range(0L - (long)__instance.halfWidth, __instance.halfWidth),
 				UnityEngine.Random.Range(0L - (long)__instance.halfHeight, trapYMax));
 
-			if (!(!Physics2D.OverlapPoint(probe, ground) || spawnInGround))
+			Vector2 hitPoint;
+			if (InstantLoad.Active)
+			{
+				if (InstantLoad.SolidAt(__instance, probe) && !spawnInGround)
+					continue;
+				if (!InstantLoad.Ray(__instance, probe, dir, WorldGeneration.CHUNKSIZE, out hitPoint))
+					continue;
+			}
+			else
+			{
+				if (!(!Physics2D.OverlapPoint(probe, ground) || spawnInGround))
+					continue;
+				RaycastHit2D hit = Physics2D.Raycast(probe, dir, WorldGeneration.CHUNKSIZE, ground);
+				if (!hit)
+					continue;
+				hitPoint = hit.point;
+			}
+			if (Mathf.Abs(hitPoint.x) >= (float)__instance.halfWidth - 1f
+				|| Mathf.Abs(hitPoint.y) >= (float)__instance.halfHeight - 1f)
 				continue;
-
-			RaycastHit2D hit = Physics2D.Raycast(probe, dir, WorldGeneration.CHUNKSIZE, ground);
-			if (!hit)
-				continue;
-			if (Mathf.Abs(hit.point.x) >= (float)__instance.halfWidth - 1f
-				|| Mathf.Abs(hit.point.y) >= (float)__instance.halfHeight - 1f)
-				continue;
-			if (checkFunc != null && !checkFunc(__instance.WorldToBlockPos(hit.point - Vector2.up * 0.5f)))
+			if (checkFunc != null && !checkFunc(__instance.WorldToBlockPos(hitPoint - Vector2.up * 0.5f)))
 				continue;
 
 			float offset = UnityEngine.Random.Range(
 				spawnYOffset - spawnYOffsetDeviation,
 				spawnYOffset + spawnYOffsetDeviation);
-			Vector3 pos = hit.point - dir * offset;
+			Vector3 pos = hitPoint - dir * offset;
 			float rotZ = basObj.transform.eulerAngles.z
 				+ UnityEngine.Random.Range(0f - randomRotation, randomRotation);
 			bool negX = forceFlip || (randomFlip && UnityEngine.Random.Range(0f, 1f) > 0.5f);
 
-			Vector2Int support = __instance.WorldToBlockPos(hit.point + dir * 0.5f);
+			Vector2Int support = __instance.WorldToBlockPos(hitPoint + dir * 0.5f);
 
 			if (InKeepWindow(__instance, pos))
 			{
@@ -238,8 +267,12 @@ internal static class GenGhostPlace
 			// tilemap with no entity. stock skips these. Back (medical) is a real interior.
 			// Map on lifepod/biocontainer is the block stamp, already in worldBlocks.
 			bool interior = tilemap && !placedKind && !StructureCatalog.IsBlockStamp(basObj, child);
+			// one per pod. ghosting them left nothing to draw. everything else still ghosts.
+			bool podBg = IsPodBackground(child);
+			// ignoreBodyOptimize on a non-stock building, plus thornbackelder. ghosting is the cull.
+			bool keepBody = ElderResident.KeepLive(child);
 			Vector3 worldPos = origin + (Vector2)child.localPosition;
-			if (!placedKind && !interior)
+			if (!placedKind && !interior && !podBg)
 			{
 				if (StructureBgLog.Watch(child.name, tilemap))
 					StructureBgLog.Gen("SKIP", basObj, prefabPath, child, worldPos, __instance);
@@ -248,12 +281,26 @@ internal static class GenGhostPlace
 
 			float rotZ = child.localRotation.eulerAngles.z;
 
-			if (InKeepWindow(__instance, worldPos))
+			if (podBg || keepBody || InKeepWindow(__instance, worldPos))
 			{
-				GameObject go = UnityEngine.Object.Instantiate(
-					child.gameObject, worldPos, child.localRotation);
-				if (go.GetComponent<Tilemap>() != null && __instance.worldGrid != null)
-					go.transform.SetParent(__instance.worldGrid.transform, true);
+				GameObject go;
+				// a loose instantiate never joins the grid, which is the missing background.
+				if (tilemap)
+				{
+					// parent while inactive. an active instantiate then a reparent often never draws.
+					go = ChunkObjects.InstantiateInactive(child.gameObject, worldPos, child.localRotation);
+					if (go != null && __instance.worldGrid != null)
+						go.transform.SetParent(__instance.worldGrid.transform, true);
+					if (go != null && !go.activeSelf)
+						go.SetActive(true);
+					if (go != null)
+						StructureTilemapVault.WakeRenderer(go);
+				}
+				else
+				{
+					go = UnityEngine.Object.Instantiate(
+						child.gameObject, worldPos, child.localRotation);
+				}
 				if (StructureBgLog.Watch(child.name, tilemap))
 					StructureBgLog.Gen("LIVE", basObj, prefabPath, child, worldPos, __instance);
 				_placedLive++;
@@ -270,20 +317,24 @@ internal static class GenGhostPlace
 				Item item = child.GetComponent<Item>();
 				if (item != null && build == null)
 				{
-					CaptureStore.WorldItems.Add(new WorldItemRecord
+					WorldItemRecord itemRec = new WorldItemRecord
 					{
 						Chunk = chunk,
 						Id = string.IsNullOrEmpty(item.id) ? id : item.id,
 						Condition = item.condition,
+						Battery = BatterySnap.Read(item),
 						Position = worldPos,
 						RotationZ = rotZ,
 						LocalScale = child.localScale,
-					});
+					};
+					BuildingLoot.CapturePrefabLiquids(item, itemRec);
+					CaptureStore.WorldItems.Add(itemRec);
+					ItemPath.Note("store", chunk.x, chunk.y, itemRec.Id, worldPos, "gen-ghost");
 					CaptureStore.GhostItemCount++;
 				}
 				else
 				{
-					CaptureStore.Entities.Add(new EntityRecord
+					EntityRecord ghost = new EntityRecord
 					{
 						Chunk = chunk,
 						Id = id,
@@ -293,7 +344,11 @@ internal static class GenGhostPlace
 						Position = worldPos,
 						RotationZ = rotZ,
 						StructurePrefab = prefabPath,
-					});
+					};
+					// catalog path can be empty (prefab not in the 12). clone this child anyway.
+					if (tilemap)
+						ghost.StructureVaultKey = StructureTilemapVault.EnsureTemplate(child.gameObject, id);
+					CaptureStore.Entities.Add(ghost);
 					CaptureStore.GhostEntityCount++;
 				}
 				CaptureStore.GhostFilled = true;
@@ -356,31 +411,29 @@ internal static class GenGhostPlace
 
 		if (trader != null)
 		{
-			int character = trader.character;
-			if (character <= 0)
-			{
-				// trader1/2/3
-				for (int c = 1; c <= 3; c++)
-				{
-					if (prefab.name.IndexOf(c.ToString(), StringComparison.Ordinal) >= 0)
-					{
-						character = c;
-						break;
-					}
-				}
-			}
+			// name wins. trader2.character is 1, and that used to load the trader1 prefab
+			int character = StructureLiveState.ResolveTraderPrefab(trader);
 			float x = pos.x;
+			Vector3 scale = prefab.transform.localScale;
+			if (negX)
+				scale.x = -UnityEngine.Mathf.Abs(scale.x);
 			CaptureStore.Traders.Add(new TraderRecord
 			{
 				Chunk = chunk,
 				Position = pos,
 				Health = build != null ? build.health : 0f,
+				RequireGround = build == null || build.requireGround,
+				HasBlockPlacedOn = build != null,
+				BlockPlacedOn = supportBlock,
 				Character = character > 0 ? character : 1,
 				Reputation = 100f,
 				Hostility = 0f,
 				ValueGiven = 0,
 				MoveRangeMin = x - 5f,
 				MoveRangeMax = x + 5f,
+				HeightMult = trader.heightMult,
+				RotationZ = rotZ,
+				LocalScale = scale,
 			});
 			CaptureStore.GhostTraderCount++;
 			return;
@@ -404,15 +457,19 @@ internal static class GenGhostPlace
 
 		if (item != null && build == null)
 		{
-			CaptureStore.WorldItems.Add(new WorldItemRecord
+			WorldItemRecord itemRec = new WorldItemRecord
 			{
 				Chunk = chunk,
 				Id = string.IsNullOrEmpty(item.id) ? id : item.id,
 				Condition = item.condition,
+				Battery = BatterySnap.Read(item),
 				Position = pos,
 				RotationZ = rotZ,
 				LocalScale = negX ? new Vector3(-1f, 1f, 1f) : prefab.transform.localScale,
-			});
+			};
+			BuildingLoot.CapturePrefabLiquids(item, itemRec);
+			CaptureStore.WorldItems.Add(itemRec);
+			ItemPath.Note("store", chunk.x, chunk.y, itemRec.Id, pos, "gen-ghost");
 			CaptureStore.GhostItemCount++;
 			return;
 		}
@@ -445,5 +502,41 @@ internal static class GenGhostPlace
 		if (name.EndsWith(clone))
 			name = name.Substring(0, name.Length - clone.Length).TrimEnd();
 		return name;
+	}
+
+	/// <summary>
+	/// lifepod / crate / mini pod interior. Together renames id "background" to KMPSR_*.
+	/// Map is the block stamp and is not this.
+	/// </summary>
+	private static bool IsPodBackground(Transform child)
+	{
+		if (child == null || child.GetComponent<Tilemap>() == null)
+			return false;
+		if (NameIsPodBackground(child.name))
+			return true;
+		BuildingEntity build = child.GetComponent<BuildingEntity>();
+		return build != null && NameIsPodBackground(build.id);
+	}
+
+	private static bool NameIsPodBackground(string name)
+	{
+		if (string.IsNullOrEmpty(name))
+			return false;
+		if (name.StartsWith("KMPSR_", System.StringComparison.Ordinal))
+			return true;
+		return name.IndexOf("background", System.StringComparison.OrdinalIgnoreCase) >= 0;
+	}
+
+	/// <summary>host sync clone. it is a new object, so the gen wake never ran on it.</summary>
+	private static void AfterSyncInstantiate(GameObject __result)
+	{
+		if (__result == null || !IsPodBackground(__result.transform))
+			return;
+		WorldGeneration world = WorldGeneration.world;
+		if (__result.transform.parent == null && world != null && world.worldGrid != null)
+			__result.transform.SetParent(world.worldGrid.transform, true);
+		StructureTilemapVault.WakeRenderer(__result);
+		if (!__result.activeSelf)
+			__result.SetActive(true);
 	}
 }

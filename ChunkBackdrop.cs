@@ -60,7 +60,7 @@ internal static class ChunkBackdrop
 				HasBackdrop = true;
 				Known = true;
 				Plugin.Log.LogInfo(
-					$"chunk backdrop — sprite={sr.sprite.name} sort={SortingOrder}");
+					$"chunk backdrop - sprite={sr.sprite.name} sort={SortingOrder}");
 				return;
 			}
 		}
@@ -68,7 +68,7 @@ internal static class ChunkBackdrop
 		Known = sawChunk;
 		HasBackdrop = false;
 		if (sawChunk)
-			Plugin.Log.LogInfo("chunk backdrop — none (open air)");
+			Plugin.Log.LogInfo("chunk backdrop - none (open air)");
 	}
 
 	internal static void Paint(WorldGeneration world, Tilemap map)

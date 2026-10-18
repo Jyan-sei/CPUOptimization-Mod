@@ -6,8 +6,7 @@ namespace CPUOptimization2;
 /// <summary>
 /// chest contents are BuildingEntity drop tables, not an inventory.
 /// copy them on every building, empties included.
-/// child items (corpse pockets, anything parented under the building) ride NestedItems
-/// so they are not also loose world items.
+/// child items are not stored on the building. writeback puts them in CaptureStore.WorldItems.
 /// </summary>
 internal static class BuildingLoot
 {
@@ -29,8 +28,6 @@ internal static class BuildingLoot
 					record.ItemCategoriesToAdd.Add(build.itemCategoriesToAdd[i]);
 			}
 		}
-
-		AppendUnder(build.transform, build, record.NestedItems, claimedItems, playerRoot);
 	}
 
 	internal static void Apply(BuildingEntity build, EntityRecord record)
@@ -56,17 +53,9 @@ internal static class BuildingLoot
 			Take(root.GetChild(i), null, into, claimedItems, playerRoot);
 	}
 
-	private static void AppendUnder(Transform root, BuildingEntity owner, List<ItemContentRecord> into, HashSet<int> claimedItems, Transform playerRoot)
-	{
-		if (root == null || into == null)
-			return;
-		for (int i = 0; i < root.childCount; i++)
-			Take(root.GetChild(i), owner, into, claimedItems, playerRoot);
-	}
-
 	private static void Take(Transform t, BuildingEntity owner, List<ItemContentRecord> into, HashSet<int> claimedItems, Transform playerRoot)
 	{
-		if (t == null || into == null || IsUnder(playerRoot, t))
+		if (t == null || into == null || PlayerCarry.Holds(t))
 			return;
 
 		BuildingEntity nested = t.GetComponent<BuildingEntity>();
@@ -96,30 +85,66 @@ internal static class BuildingLoot
 		{
 			Id = id,
 			Condition = item.condition,
+			Battery = BatterySnap.Read(item),
 			HasPose = true,
 			Position = item.transform.position,
 			RotationZ = item.transform.eulerAngles.z,
 			LocalScale = item.transform.localScale,
 			ModState = ModBehaviourState.Capture(item.gameObject),
 		};
-		CopyLiquids(item, record.Liquids);
+		record.HasLiquids = CopyLiquids(item, record.Liquids);
 		AppendChildren(item.transform, record.Children, claimedItems, playerRoot);
+		StructureLiveState.CaptureContent(item, record);
+		NetHold.Link(item.gameObject, record);
 		return record;
 	}
 
-	private static void CopyLiquids(Item item, List<LiquidRecord> into)
+	/// <summary>
+	/// ghost rows never ran Awake, so stack is still null and HasLiquids stayed false.
+	/// copy defaultContents so the first spawn drains and pours the prefab liquid
+	/// instead of leaving Awake's pour as the only copy.
+	/// </summary>
+	internal static void CapturePrefabLiquids(Item item, WorldItemRecord record)
 	{
-		if (item == null || into == null)
+		if (item == null || record == null)
 			return;
 		WaterContainerItem water = item.GetComponent<WaterContainerItem>();
-		if (water == null || water.stack == null)
+		if (water == null)
 			return;
+		record.HasLiquids = true;
+		if (water.stack != null)
+		{
+			CopyLiquids(item, record.Liquids);
+			return;
+		}
+		if (!(item.Stats is LiquidItemInfo info) || info.defaultContents == null)
+			return;
+		for (int i = 0; i < info.defaultContents.Count; i++)
+		{
+			LiquidStack stack = info.defaultContents[i];
+			if (stack == null || string.IsNullOrEmpty(stack.liquidId) || stack.amount <= 0f)
+				continue;
+			record.Liquids.Add(new LiquidRecord { LiquidId = stack.liquidId, Amount = stack.amount });
+		}
+	}
+
+	/// <summary>true when this is a water container. empty into means drained.</summary>
+	internal static bool CopyLiquids(Item item, List<LiquidRecord> into)
+	{
+		if (item == null || into == null)
+			return false;
+		WaterContainerItem water = item.GetComponent<WaterContainerItem>();
+		if (water == null)
+			return false;
+		if (water.stack == null)
+			return true;
 		for (int i = 0; i < water.stack.Count; i++)
 		{
 			LiquidStack stack = water.stack[i];
 			if (stack != null)
 				into.Add(new LiquidRecord { LiquidId = stack.liquidId, Amount = stack.amount });
 		}
+		return true;
 	}
 
 	private static void CopyDrops(ItemDrop[] from, List<ItemDropRecord> into)
@@ -170,10 +195,4 @@ internal static class BuildingLoot
 		return name;
 	}
 
-	private static bool IsUnder(Transform root, Transform node)
-	{
-		if (root == null || node == null)
-			return false;
-		return node == root || node.IsChildOf(root);
-	}
 }

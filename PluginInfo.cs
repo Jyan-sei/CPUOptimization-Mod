@@ -4,7 +4,7 @@ internal static class PluginInfo
 {
 	internal const string GUID = "com.local.worldcapture";
 	internal const string Name = "CPUOptimization2";
-	internal const string Version = "0.7.33";
+	internal const string Version = "0.8.36";
 }
 
 

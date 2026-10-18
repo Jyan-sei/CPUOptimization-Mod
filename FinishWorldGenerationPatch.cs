@@ -34,41 +34,53 @@ internal static class FinishWorldGenerationPatch
 			if (CaptureStore.Captured || StreamState.Active)
 			{
 				CaptureStore.Clear();
+				StructureLiveState.ResetLayer();
 				StreamController.Deactivate();
 				StreamState.ResetForNewGenerate();
 				RenderTune.Reset();
 				GenGhostPlace.Reset();
-				Plugin.Log.LogInfo("generatingWorld rose again — capture/stream cleared.");
+				LayerLoadLog.Abort();
+				Plugin.Log.LogInfo("generatingWorld rose again - capture/stream cleared.");
 			}
+			LayerLoadLog.Begin();
 			return;
 		}
 
 		if (!world.worldExists || CaptureStore.Captured)
 			return;
 
+		LayerLoadLog.Begin();
+		LayerLoadLog.MarkGenDone();
+
 		if (world.biomeOverride == WorldGeneration.OverrideSceneType.Tutorial)
 		{
-			Plugin.Log.LogInfo("tutorial layer — capture skipped.");
+			Plugin.Log.LogInfo("tutorial layer - capture skipped.");
+			// stream never starts, but pod interiors still cull on their own
+			StructureTilemapVault.WakeAll(world);
+			LayerLoadLog.Finish("tutorial");
 			return;
 		}
 
-		// mp: always capture (puts GenGhostPlace ghosts back). stream unload/load is host-only.
-		// clients must not destroy GOs the host owns.
+		// capture keeps the ghost rows. the stream then drops everything outside the window.
+		// a client uses her own window. NetHold refuses to destroy a Together replica.
 		bool wantStream = Plugin.StreamEnabled != null && Plugin.StreamEnabled.Value;
 		bool stream = wantStream && MpSession.AllowStream;
-		if (wantStream && !stream)
-			Plugin.Log.LogInfo("Krok client — capture on, stream deferred (host owns unload/load).");
 
 		if (wantStream)
 		{
 			// inline Instantiates (ropes, bandages, remote traders, mini-barrels) go into the arrays, then get destroyed
-			GenGhostPlace.CullLiveOutsideWindow(world);
-			GenGhostPlace.LogSummary();
-			WorldScanner.Capture(world, mergeLiveOnly: CaptureStore.GhostFilled);
+			LayerLoadLog.Span("ghost", () =>
+			{
+				GenGhostPlace.CullLiveOutsideWindow(world);
+				GenGhostPlace.LogSummary();
+			});
+			LayerLoadLog.Span("capture", () => WorldScanner.Capture(world, mergeLiveOnly: CaptureStore.GhostFilled));
+			// corpse and structure pockets land in WorldItems once. later Start and loot markers stay off.
+			LayerLoadLog.Span("bake-loot", () => StructureLiveState.BakeLayerLoot(world));
 		}
 		else
 		{
-			WorldScanner.Capture(world);
+			LayerLoadLog.Span("capture", () => WorldScanner.Capture(world));
 		}
 
 		SanityLog.LogObjectCapture();
@@ -80,6 +92,7 @@ internal static class FinishWorldGenerationPatch
 		else
 		{
 			CaptureStore.FramesUntilTileCapture = 90;
+			LayerLoadLog.Finish(wantStream ? "client" : "stream-off");
 		}
 
 		GenGhostPlace.Reset();

@@ -16,6 +16,7 @@ internal static class ScreenCull
 
 	private static readonly List<Renderer> Entries = new List<Renderer>(512);
 	private static readonly HashSet<int> Known = new HashSet<int>();
+	private static readonly List<GameObject> _roster = new List<GameObject>(64);
 
 	private static float _cullAge;
 	private static float _rescanAge;
@@ -98,6 +99,9 @@ internal static class ScreenCull
 			return false;
 		if (IsChunkBackdrop(r))
 			return true;
+		// corner-anchored structure paint. culling it by the corner pivot hides the structure.
+		if (StructureTilemapVault.IsPinnedCornerTilemap(r.transform))
+			return true;
 		// elder chunks stay drawable. BuildingEntity freezes the body when this renderer is off
 		if (ElderResident.ProtectsRenderer(r))
 			return true;
@@ -173,10 +177,6 @@ internal static class ScreenCull
 		if (!TryGetView(out Vector3 cam, out float onHalfW, out float onHalfH, out float offHalfW, out float offHalfH))
 			return;
 
-		Transform playerRoot = null;
-		if (PlayerCamera.main != null && PlayerCamera.main.body != null)
-			playerRoot = PlayerCamera.main.body.transform;
-
 		int count = Entries.Count;
 		if (count == 0)
 			return;
@@ -211,7 +211,7 @@ internal static class ScreenCull
 				continue;
 			}
 
-			if (playerRoot != null && r.transform.IsChildOf(playerRoot))
+			if (PlayerCarry.Holds(r.transform))
 			{
 				if (!r.enabled)
 				{
@@ -247,7 +247,7 @@ internal static class ScreenCull
 		{
 			_telemetryAge = 0f;
 			Plugin.Log.LogInfo(
-				$"screen cull — tracked={Entries.Count} batchOn~{_lastOn} batchOff~{_lastOff} " +
+				$"screen cull - tracked={Entries.Count} batchOn~{_lastOn} batchOff~{_lastOff} " +
 				$"view={onHalfW:0.#}x{onHalfH:0.#} offPad={offHalfW - onHalfW:0.#}");
 		}
 	}
@@ -371,11 +371,16 @@ internal static class ScreenCull
 			}
 		}
 
-		// sprites only while stream is up. rescan interval spreads out the Find
-		SpriteRenderer[] sprites = UnityEngine.Object.FindObjectsOfType<SpriteRenderer>();
-		for (int i = 0; i < sprites.Length; i++)
+		// sprites on objects the stream already registered. no scene-wide search.
+		ChunkRoster.CopyAll(_roster);
+		for (int i = 0; i < _roster.Count; i++)
 		{
-			SpriteRenderer sr = sprites[i];
+			GameObject go = _roster[i];
+			if (go == null)
+				continue;
+			SpriteRenderer sr = go.GetComponent<SpriteRenderer>();
+			if (sr == null)
+				sr = go.GetComponentInChildren<SpriteRenderer>();
 			if (sr == null)
 				continue;
 			if (IsNeverCull(sr))

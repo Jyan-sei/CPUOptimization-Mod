@@ -23,7 +23,7 @@ internal static class PotatoMode
 			RenderTune.Restore();
 
 		Plugin.Log.LogInfo(on
-			? "Super Potato Lighting on — RenderTune URP applied"
-			: "Super Potato Lighting off — stock URP restored");
+			? "Super Potato Lighting on - RenderTune URP applied"
+			: "Super Potato Lighting off - stock URP restored");
 	}
 }

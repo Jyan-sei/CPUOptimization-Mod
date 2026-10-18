@@ -13,6 +13,7 @@ namespace CPUOptimization2;
 /// </summary>
 internal static class RenderTune
 {
+	private static readonly List<GameObject> _roster = new List<GameObject>(64);
 	private static bool _potatoApplied;
 	private static bool _stockCaptured;
 	private static int _multiplyStyleIndex = -1;
@@ -148,7 +149,7 @@ internal static class RenderTune
 			UniversalRenderPipelineAsset asset = GetUrpAsset();
 			if (asset == null)
 			{
-				Plugin.Log.LogWarning("RenderTune Apply — no URP asset yet");
+				Plugin.Log.LogWarning("RenderTune Apply - no URP asset yet");
 				return;
 			}
 
@@ -200,7 +201,7 @@ internal static class RenderTune
 			if (Plugin.RenderTuneLights != null && Plugin.RenderTuneLights.Value)
 				TuneVisibleLights();
 
-			Plugin.Log.LogInfo("RenderTune Apply — potato URP/lights on");
+			Plugin.Log.LogInfo("RenderTune Apply - potato URP/lights on");
 		}
 		catch (Exception ex)
 		{
@@ -250,7 +251,7 @@ internal static class RenderTune
 			_potatoApplied = false;
 			_lightSnaps.Clear();
 			_multiplyStyleIndex = -1;
-			Plugin.Log.LogInfo("RenderTune Restore — stock URP/lights");
+			Plugin.Log.LogInfo("RenderTune Restore - stock URP/lights");
 		}
 		catch (Exception ex)
 		{
@@ -317,20 +318,9 @@ internal static class RenderTune
 
 	private static int PreferMultiplyStyle(Renderer2DData r2d)
 	{
-		int idx = FindMultiplyStyleIndex(r2d);
-		if (idx < 0 || _blendModeField == null)
-			return idx < 0 ? 0 : idx;
-
-		Light2DBlendStyle[] styles = r2d.lightBlendStyles;
-		object cur = _blendModeField.GetValue(styles[idx]);
-		if (cur != null && Convert.ToInt32(cur) != 1)
-		{
-			object multiplyEnum = Enum.ToObject(_blendModeField.FieldType, 1);
-			object boxed = styles[idx];
-			_blendModeField.SetValue(boxed, multiplyEnum);
-			styles[idx] = (Light2DBlendStyle)boxed;
-		}
-		return idx;
+		// do not rewrite a style's blend mode. forcing multiply onto the
+		// slot flashlights already use turns their cone black.
+		return FindMultiplyStyleIndex(r2d);
 	}
 
 	private static void RestoreMultiplyStyle(Renderer2DData r2d)
@@ -350,19 +340,16 @@ internal static class RenderTune
 	{
 		Light2DBlendStyle[] styles = r2d.lightBlendStyles;
 		if (styles == null || styles.Length == 0 || _blendModeField == null)
-			return 0;
+			return -1;
 
 		for (int i = 0; i < styles.Length; i++)
 		{
 			object modeObj = _blendModeField.GetValue(styles[i]);
 			int mode = modeObj != null ? Convert.ToInt32(modeObj) : -1;
-			bool isMultiply = mode == 1
-				|| (!string.IsNullOrEmpty(styles[i].name)
-					&& styles[i].name.IndexOf("Multiply", StringComparison.OrdinalIgnoreCase) >= 0);
-			if (isMultiply)
+			if (mode == 1)
 				return i;
 		}
-		return 0;
+		return -1;
 	}
 
 	private static void DisableHeavyRendererFeatures(Renderer2DData r2d)
@@ -383,12 +370,15 @@ internal static class RenderTune
 			{
 				if (!(list[i] is ScriptableRendererFeature feature) || feature == null)
 					continue;
-				string n = feature.name ?? feature.GetType().Name;
-				bool heavy =
-					n.IndexOf("Debug", StringComparison.OrdinalIgnoreCase) >= 0
-					|| (n.IndexOf("Blit", StringComparison.OrdinalIgnoreCase) >= 0
-						&& n.IndexOf("HDR", StringComparison.OrdinalIgnoreCase) < 0)
-					|| feature.GetType().Name.IndexOf("FullScreenPass", StringComparison.OrdinalIgnoreCase) >= 0;
+				string n = feature.name ?? "";
+				string typeName = feature.GetType().Name;
+				// pain, blood, hunger, frost, and blur are fullscreen passes.
+				// only a debug feature is heavy enough to turn off.
+				bool heavy = n.IndexOf("Debug", StringComparison.OrdinalIgnoreCase) >= 0
+					|| typeName.IndexOf("Debug", StringComparison.OrdinalIgnoreCase) >= 0;
+				Plugin.Log.LogInfo(
+					"RenderTune feature " + typeName + " \"" + n + "\" active=" + (feature.isActive ? 1 : 0)
+					+ " keep=" + (heavy ? 0 : 1));
 				if (!heavy || !feature.isActive)
 					continue;
 				feature.SetActive(false);
@@ -604,14 +594,11 @@ internal static class RenderTune
 			Light2DBlendStyle[] styles = r2d != null ? r2d.lightBlendStyles : null;
 			int idx = light.blendStyleIndex;
 			if (styles == null || idx < 0 || idx >= styles.Length || _blendModeField == null)
-				return idx == _multiplyStyleIndex || idx == 0;
+				return false;
 			object modeObj = _blendModeField.GetValue(styles[idx]);
 			int mode = modeObj != null ? Convert.ToInt32(modeObj) : -1;
-			if (mode == 1)
-				return true;
-			string name = styles[idx].name;
-			return !string.IsNullOrEmpty(name)
-				&& name.IndexOf("Multiply", StringComparison.OrdinalIgnoreCase) >= 0;
+			// additive flashlights sit on style 0. only lights already multiplying move.
+			return mode == 1;
 		}
 		catch
 		{

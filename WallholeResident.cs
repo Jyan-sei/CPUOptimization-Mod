@@ -7,7 +7,7 @@ namespace CPUOptimization2;
 /// <summary>
 /// stock Special/wallholes stay alive for the whole run, no stream destroy/respawn.
 /// reparent them off chunk tilemaps so DestroyRenderer cant take them with the chunk.
-/// sprites and particles stay on. only Light2D / AudioSource follow the stream window.
+/// sprites stay on. Light2D, audio, and particles follow the stream window.
 /// </summary>
 internal static class WallholeResident
 {
@@ -30,6 +30,28 @@ internal static class WallholeResident
 	private static int _lastY0 = int.MinValue;
 	private static int _lastX1 = int.MinValue;
 	private static int _lastY1 = int.MinValue;
+	private static int _lastHash;
+
+	internal static void CountDraw(out int roots, out int spritesOn, out int expensiveOn)
+	{
+		roots = 0;
+		spritesOn = 0;
+		expensiveOn = 0;
+		for (int i = 0; i < Entries.Count; i++)
+		{
+			Entry entry = Entries[i];
+			if (entry == null || entry.Go == null)
+				continue;
+			roots++;
+			if (entry.ExpensiveOn)
+				expensiveOn++;
+			SpriteRenderer sprite = entry.Go.GetComponent<SpriteRenderer>();
+			if (sprite == null)
+				sprite = entry.Go.GetComponentInChildren<SpriteRenderer>(true);
+			if (sprite != null && sprite.enabled)
+				spritesOn++;
+		}
+	}
 
 	internal static int Count
 	{
@@ -51,6 +73,7 @@ internal static class WallholeResident
 		OwnedRoots.Clear();
 		OwnedTransforms.Clear();
 		_lastX0 = _lastY0 = _lastX1 = _lastY1 = int.MinValue;
+		_lastHash = 0;
 		// live GOs die with the world, only drop the holder
 		if (_root != null)
 		{
@@ -89,7 +112,7 @@ internal static class WallholeResident
 			added++;
 		}
 
-		Plugin.Log.LogInfo($"wallhole resident — tracked={Entries.Count} newlyRegistered={added}");
+		Plugin.Log.LogInfo($"wallhole resident - tracked={Entries.Count} newlyRegistered={added}");
 	}
 
 	internal static void SyncWindow(WorldGeneration world, int x0, int y0, int x1, int y1)
@@ -97,11 +120,19 @@ internal static class WallholeResident
 		if (Entries.Count == 0)
 			return;
 
-		bool windowSame = x0 == _lastX0 && y0 == _lastY0 && x1 == _lastX1 && y1 == _lastY1;
+		// holes are fixed after Discover. sprites and particles were forced on then.
+		// ScreenCull will not take them, so a still window has nothing to visit.
+		// a dead spectator has two windows, so the bounding box can stay put
+		// while the loaded chunks slide. the hash is that set.
+		int hash = StreamController.LiveDesiredHash();
+		if (x0 == _lastX0 && y0 == _lastY0 && x1 == _lastX1 && y1 == _lastY1 && hash == _lastHash)
+			return;
+
 		_lastX0 = x0;
 		_lastY0 = y0;
 		_lastX1 = x1;
 		_lastY1 = y1;
+		_lastHash = hash;
 
 		int on = 0;
 		int off = 0;
@@ -114,11 +145,7 @@ internal static class WallholeResident
 				continue;
 			}
 
-			// sprites must not stay ScreenCull-disabled
-			EnsureSpritesOn(e);
-
-			bool wantOn = e.Chunk.x >= x0 && e.Chunk.x <= x1
-				&& e.Chunk.y >= y0 && e.Chunk.y <= y1;
+			bool wantOn = StreamController.IsChunkDesired(e.Chunk.x, e.Chunk.y);
 			if (e.ExpensiveOn == wantOn)
 			{
 				if (wantOn)
@@ -135,7 +162,7 @@ internal static class WallholeResident
 				off++;
 		}
 
-		if (!windowSame && Plugin.VerboseLogging != null && Plugin.VerboseLogging.Value)
+		if (Plugin.VerboseLogging != null && Plugin.VerboseLogging.Value)
 		{
 			Plugin.Log.LogInfo(
 				$"wallhole resident cull window {x0},{y0}..{x1},{y1} expensiveOn={on} off={off}");
@@ -199,12 +226,26 @@ internal static class WallholeResident
 
 		OwnedRoots.Add(go.GetInstanceID());
 		ClaimTree(go.transform, claimedTransforms);
-		// sprites have to stay drawable. undo a ScreenCull disable if one already landed
+		// once. ScreenCull blacklists the name, and nothing else spawns holes after capture.
 		SpriteRenderer[] sprites = go.GetComponentsInChildren<SpriteRenderer>(true);
 		for (int i = 0; i < sprites.Length; i++)
 		{
 			if (sprites[i] != null && !sprites[i].enabled)
 				sprites[i].enabled = true;
+		}
+		if (e.Particles != null)
+		{
+			for (int i = 0; i < e.Particles.Length; i++)
+			{
+				ParticleSystem ps = e.Particles[i];
+				if (ps == null)
+					continue;
+				ParticleSystem.EmissionModule emission = ps.emission;
+				if (!emission.enabled)
+					emission.enabled = true;
+				if (!ps.isPlaying)
+					ps.Play();
+			}
 		}
 
 		Entries.Add(e);
@@ -223,32 +264,6 @@ internal static class WallholeResident
 			OwnedTransforms.Add(id);
 			if (claimedTransforms != null)
 				claimedTransforms.Add(id);
-		}
-	}
-
-	private static void EnsureSpritesOn(Entry e)
-	{
-		if (e == null || e.Go == null)
-			return;
-		SpriteRenderer[] sprites = e.Go.GetComponentsInChildren<SpriteRenderer>(true);
-		for (int i = 0; i < sprites.Length; i++)
-		{
-			if (sprites[i] != null && !sprites[i].enabled)
-				sprites[i].enabled = true;
-		}
-		// particles are part of the hole look, dont gate them on the window
-		if (e.Particles == null)
-			return;
-		for (int i = 0; i < e.Particles.Length; i++)
-		{
-			ParticleSystem ps = e.Particles[i];
-			if (ps == null)
-				continue;
-			var emission = ps.emission;
-			if (!emission.enabled)
-				emission.enabled = true;
-			if (!ps.isPlaying)
-				ps.Play();
 		}
 	}
 
@@ -273,6 +288,29 @@ internal static class WallholeResident
 				a.enabled = on;
 				if (!on && a.isPlaying)
 					a.Stop();
+			}
+		}
+		// holes outside the window were still simulating. sprites stay drawn.
+		if (e.Particles != null)
+		{
+			for (int i = 0; i < e.Particles.Length; i++)
+			{
+				ParticleSystem ps = e.Particles[i];
+				if (ps == null)
+					continue;
+				ParticleSystem.EmissionModule emission = ps.emission;
+				if (on)
+				{
+					if (!emission.enabled)
+						emission.enabled = true;
+					if (!ps.isPlaying)
+						ps.Play();
+				}
+				else if (ps.isPlaying || emission.enabled)
+				{
+					emission.enabled = false;
+					ps.Stop(true, ParticleSystemStopBehavior.StopEmittingAndClear);
+				}
 			}
 		}
 	}
